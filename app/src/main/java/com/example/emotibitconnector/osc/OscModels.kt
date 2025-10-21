@@ -7,6 +7,7 @@ import java.nio.ByteOrder
 data class OscMessage(
     val address: String,
     val arguments: List<OscArgument>,
+    val typeTags: String,
     val rawBytes: ByteArray
 )
 
@@ -14,6 +15,7 @@ sealed class OscArgument {
     data class Int(val value: kotlin.Int) : OscArgument()
     data class Float(val value: kotlin.Float) : OscArgument()
     data class String(val value: kotlin.String) : OscArgument()
+    data class Unknown(val typeTag: Char, val payload: ByteArray) : OscArgument()
 }
 
 /** Minimal OSC parser/encoder tailored to EmotiBit payloads (strings, ints, floats). */
@@ -52,12 +54,14 @@ object OscPacketParser {
                     cursor = next
                 }
                 else -> {
-                    // Unsupported OSC argument type for now; bail out gracefully.
-                    return null
+                    // Acceptance requirement: unknown typetags should not drop the packet.
+                    val remaining = bytes.copyOfRange(cursor, bytes.size)
+                    arguments.add(OscArgument.Unknown(typeTag = typeTag, payload = remaining))
+                    break
                 }
             }
         }
-        OscMessage(address = address, arguments = arguments, rawBytes = bytes)
+        OscMessage(address = address, arguments = arguments, typeTags = typeTags, rawBytes = bytes)
     }.getOrNull()
 
     private fun readString(bytes: ByteArray, start: Int): Pair<String, Int> {
@@ -91,6 +95,7 @@ object OscPacketEncoder {
                         is OscArgument.Int -> 'i'
                         is OscArgument.Float -> 'f'
                         is OscArgument.String -> 's'
+                        is OscArgument.Unknown -> error("Cannot encode unknown OSC argument type ${arg.typeTag}")
                     }
                 )
             }
@@ -104,6 +109,9 @@ object OscPacketEncoder {
                 is OscArgument.Int -> buffer.putInt(arg.value)
                 is OscArgument.Float -> buffer.putFloat(arg.value)
                 is OscArgument.String -> writePaddedString(buffer, arg.value)
+                is OscArgument.Unknown -> throw IllegalArgumentException(
+                    "Cannot encode unknown OSC argument type ${arg.typeTag}"
+                )
             }
         }
         buffer.flip()
@@ -119,6 +127,9 @@ object OscPacketEncoder {
             when (argument) {
                 is OscArgument.Int, is OscArgument.Float -> 4
                 is OscArgument.String -> align4(argument.value.length + 1)
+                is OscArgument.Unknown -> throw IllegalArgumentException(
+                    "Cannot estimate size of unknown OSC argument type ${argument.typeTag}"
+                )
             }
         }
         return paddedAddress + paddedTags + argumentBytes

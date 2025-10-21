@@ -8,25 +8,33 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Button
 import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.emotibitconnector.CommandMode
 import com.example.emotibitconnector.ConnectionStatus
 import com.example.emotibitconnector.EmotiBitUiPacket
 import com.example.emotibitconnector.EmotiBitUiState
@@ -42,11 +50,10 @@ fun EmotiBitConnectorApp() {
         onDeviceAddressChange = viewModel::updateDeviceAddress,
         onListenPortChange = viewModel::updateListenPort,
         onCommandPortChange = viewModel::updateCommandPort,
-        onStreamAddressChange = viewModel::updateStreamAddress,
+        onCommandModeChange = viewModel::updateCommandMode,
         onStartClick = viewModel::startListening,
         onStopClick = viewModel::stopListening,
-        onRequestStream = viewModel::sendStreamRequest,
-        onStopStream = viewModel::sendStopRequest,
+        onSendStartCommand = viewModel::sendStartCommand,
         onDismissError = viewModel::clearError
     )
 }
@@ -58,11 +65,10 @@ fun EmotiBitScreen(
     onDeviceAddressChange: (String) -> Unit,
     onListenPortChange: (String) -> Unit,
     onCommandPortChange: (String) -> Unit,
-    onStreamAddressChange: (String) -> Unit,
+    onCommandModeChange: (CommandMode) -> Unit,
     onStartClick: () -> Unit,
     onStopClick: () -> Unit,
-    onRequestStream: () -> Unit,
-    onStopStream: () -> Unit,
+    onSendStartCommand: () -> Unit,
     onDismissError: () -> Unit
 ) {
     Scaffold(
@@ -80,24 +86,26 @@ fun EmotiBitScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(
-                text = "Join the EmotiBit hotspot (2.4 GHz), then listen for OSC telemetry.",
+                text = "Ensure EmotiBit and this phone are on the same 2.4 GHz network (this phone's hotspot).",
                 style = MaterialTheme.typography.bodyMedium
             )
+            state.localHotspotIp?.let { localIp ->
+                Text(
+                    text = "Phone hotspot IPv4: $localIp",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
             ConnectionStatusSummary(state.connectionStatus)
-            OutlinedTextField(
-                value = state.deviceAddress,
-                onValueChange = onDeviceAddressChange,
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                label = { Text("EmotiBit IPv4 address") },
-                placeholder = { Text("192.168.4.1") }
+            CommandModeSelector(
+                selectedMode = state.commandMode,
+                onSelectionChange = onCommandModeChange
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 OutlinedTextField(
-                    value = state.listenPort,
+                    value = state.listenPortInput,
                     onValueChange = onListenPortChange,
                     modifier = Modifier.weight(1f),
                     singleLine = true,
@@ -105,22 +113,25 @@ fun EmotiBitScreen(
                     placeholder = { Text("8000") }
                 )
                 OutlinedTextField(
-                    value = state.commandPort,
+                    value = state.commandPortInput,
                     onValueChange = onCommandPortChange,
                     modifier = Modifier.weight(1f),
                     singleLine = true,
                     label = { Text("Command port") },
-                    placeholder = { Text("8001") }
+                    placeholder = { Text("9000") }
                 )
             }
-            OutlinedTextField(
-                value = state.streamAddress,
-                onValueChange = onStreamAddressChange,
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                label = { Text("Stream command address") },
-                placeholder = { Text("/EmotiBit/Stream") }
-            )
+            if (state.commandMode == CommandMode.UNICAST_CMD) {
+                OutlinedTextField(
+                    value = state.deviceIpInput,
+                    onValueChange = onDeviceAddressChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("EmotiBit IPv4 (required for UNICAST)") },
+                    placeholder = { Text("e.g. 192.168.43.101") }
+                )
+            }
+            HintCard()
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -138,32 +149,31 @@ fun EmotiBitScreen(
                     Text("Stop")
                 }
             }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            OutlinedButton(
+                onClick = onSendStartCommand,
+                enabled = state.isListening
             ) {
-                OutlinedButton(
-                    onClick = onRequestStream,
-                    enabled = state.isListening
-                ) {
-                    Text("Request stream")
-                }
-                TextButton(
-                    onClick = onStopStream,
-                    enabled = state.isListening
-                ) {
-                    Text("Stop stream")
-                }
+                Text("Send start command")
             }
             state.errorMessage?.let { message ->
                 ErrorBanner(message = message, onDismiss = onDismissError)
+            }
+            state.infoMessage?.let { message ->
+                InfoBanner(message = message)
             }
             Divider()
             Text(
                 text = "Recent OSC packets",
                 style = MaterialTheme.typography.titleMedium
             )
-            if (state.packetLog.isEmpty()) {
+            val listState = rememberLazyListState()
+            val orderedLog = remember(state.packetLog) { state.packetLog.asReversed() }
+            LaunchedEffect(orderedLog.size) {
+                if (orderedLog.isNotEmpty()) {
+                    listState.animateScrollToItem(orderedLog.lastIndex)
+                }
+            }
+            if (orderedLog.isEmpty()) {
                 EmptyState(
                     modifier = Modifier
                         .weight(1f)
@@ -171,17 +181,67 @@ fun EmotiBitScreen(
                 )
             } else {
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
                 ) {
-                    items(state.packetLog, key = { it.id }) { packet ->
+                    items(orderedLog, key = { it.id }) { packet ->
                         PacketRow(packet)
                     }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun CommandModeSelector(
+    selectedMode: CommandMode,
+    onSelectionChange: (CommandMode) -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Text(
+            text = "Command strategy",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold
+        )
+        val modes = remember { CommandMode.values().toList() }
+        modes.forEach { mode ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                RadioButton(
+                    selected = selectedMode == mode,
+                    onClick = { onSelectionChange(mode) },
+                    colors = RadioButtonDefaults.colors()
+                )
+                Column {
+                    Text(mode.toUserFacingLabel(), style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        text = mode.toDescription(),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun CommandMode.toUserFacingLabel(): String = when (this) {
+    CommandMode.PASSIVE -> "Passive"
+    CommandMode.BROADCAST_CMD -> "Broadcast command"
+    CommandMode.UNICAST_CMD -> "Unicast command"
+}
+
+private fun CommandMode.toDescription(): String = when (this) {
+    CommandMode.PASSIVE -> "Listen only; show data if the EmotiBit broadcasts telemetry."
+    CommandMode.BROADCAST_CMD -> "Send a start message to the hotspot /24 broadcast address."
+    CommandMode.UNICAST_CMD -> "Send a start message directly to a known EmotiBit IP."
 }
 
 @Composable
@@ -204,13 +264,35 @@ private fun ErrorBanner(message: String, onDismiss: () -> Unit) {
 }
 
 @Composable
+private fun InfoBanner(message: String) {
+    Text(
+        text = message,
+        color = MaterialTheme.colorScheme.primary,
+        style = MaterialTheme.typography.bodyMedium
+    )
+}
+
+@Composable
+private fun HintCard() {
+    OutlinedCard(
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Text(
+            text = "Hint: Some Android hotspot builds filter UDP broadcast. If broadcast commands fail, switch to UNICAST after noting the EmotiBit IP from hotspot connected devices.",
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(12.dp)
+        )
+    }
+}
+
+@Composable
 private fun EmptyState(modifier: Modifier = Modifier) {
     Column(
         modifier = modifier.padding(vertical = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
-            text = "No data yet. Start listening then request the stream.",
+            text = "No data yet. Start listening then wait for OSC packets, or send a command if needed.",
             style = MaterialTheme.typography.bodyMedium,
             textAlign = TextAlign.Center
         )
@@ -225,7 +307,7 @@ private fun PacketRow(packet: EmotiBitUiPacket) {
             .padding(vertical = 8.dp)
     ) {
         Text(
-            text = "${packet.timeFormatted} • ${packet.source}",
+            text = "${packet.prettyTime} • ${packet.source}",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.primary
         )
@@ -233,9 +315,13 @@ private fun PacketRow(packet: EmotiBitUiPacket) {
             text = packet.address,
             style = MaterialTheme.typography.titleSmall
         )
-        if (packet.argumentSummary.isNotEmpty()) {
+        Text(
+            text = "typetags: ${packet.typeTags}",
+            style = MaterialTheme.typography.bodySmall
+        )
+        if (packet.values.isNotEmpty()) {
             Text(
-                text = packet.argumentSummary,
+                text = packet.values,
                 style = MaterialTheme.typography.bodySmall
             )
         }
@@ -259,31 +345,33 @@ private fun EmotiBitScreenPreview() {
     val packets = listOf(
         EmotiBitUiPacket(
             id = 1L,
+            timestampMillis = System.currentTimeMillis(),
+            source = "192.168.43.120",
             address = "/EmotiBit/heartRate",
-            argumentSummary = "f=72.4",
-            receivedAtMillis = System.currentTimeMillis(),
-            source = "192.168.4.1"
+            typeTags = ",f",
+            values = "f=72.4",
+            prettyTime = "12:00:00.000"
         )
     )
     EmotiBitConnectorTheme {
         EmotiBitScreen(
             state = EmotiBitUiState(
-                deviceAddress = "192.168.4.1",
-                listenPort = "8000",
-                commandPort = "8001",
-                streamAddress = "/EmotiBit/Stream",
+                commandMode = CommandMode.BROADCAST_CMD,
+                listenPortInput = "8000",
+                commandPortInput = "9000",
+                deviceIpInput = "192.168.43.101",
                 isListening = true,
                 connectionStatus = ConnectionStatus.Listening(8000),
-                packetLog = packets
+                packetLog = packets,
+                localHotspotIp = "192.168.43.1"
             ),
             onDeviceAddressChange = {},
             onListenPortChange = {},
             onCommandPortChange = {},
-            onStreamAddressChange = {},
+            onCommandModeChange = {},
             onStartClick = {},
             onStopClick = {},
-            onRequestStream = {},
-            onStopStream = {},
+            onSendStartCommand = {},
             onDismissError = {}
         )
     }
