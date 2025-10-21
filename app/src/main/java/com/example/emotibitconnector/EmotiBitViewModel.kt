@@ -217,8 +217,8 @@ sealed class ConnectionStatus {
 
 data class EmotiBitUiState(
     val commandMode: CommandMode = CommandMode.PASSIVE,
-    val listenPortInput: String = "8000",
-    val commandPortInput: String = "9000",
+    val listenPortInput: String = "3132",
+    val commandPortInput: String = "3133",
     val deviceIpInput: String = "",
     val listenPortResolved: Int? = null,
     val commandPortResolved: Int? = null,
