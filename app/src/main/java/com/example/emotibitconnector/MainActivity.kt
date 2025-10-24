@@ -16,10 +16,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-        // Acceptance checklist: hold a MulticastLock so hotspot UDP/OSC broadcast traffic reaches the app.
         multicastLock = wifiManager?.createMulticastLock("emotibit-mlock")?.apply {
-            setReferenceCounted(true)
-            acquire()
+            setReferenceCounted(false)
         }
         enableEdgeToEdge()
         setContent {
@@ -27,6 +25,24 @@ class MainActivity : ComponentActivity() {
                 EmotiBitConnectorApp()
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        multicastLock?.let { lock ->
+            if (!lock.isHeld) {
+                lock.acquire()
+            }
+        }
+    }
+
+    override fun onStop() {
+        multicastLock?.let { lock ->
+            if (lock.isHeld) {
+                lock.release()
+            }
+        }
+        super.onStop()
     }
 
     override fun onDestroy() {

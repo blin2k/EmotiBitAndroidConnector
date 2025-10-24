@@ -1,5 +1,6 @@
 package com.example.emotibitconnector.osc
 
+import com.example.emotibitconnector.network.EmotiBitProto
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -152,3 +153,24 @@ object OscPacketEncoder {
         return aligned
     }
 }
+
+fun buildAdvertiseProbeMessage(): ByteArray =
+    OscPacketEncoder.encode(
+        address = EmotiBitProto.OSC_ADDR_ADVERTISE,
+        arguments = emptyList()
+    )
+
+fun buildStartStreamMessage(localIp: String, dataPort: Int): ByteArray =
+    OscPacketEncoder.encode(
+        address = EmotiBitProto.OSC_ADDR_START_STREAM,
+        arguments = listOf(
+            OscArgument.String(localIp),
+            OscArgument.Int(dataPort)
+        )
+    )
+
+fun buildStopStreamMessage(): ByteArray =
+    OscPacketEncoder.encode(
+        address = EmotiBitProto.OSC_ADDR_STOP_STREAM,
+        arguments = emptyList()
+    )
