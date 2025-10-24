@@ -7,6 +7,8 @@ object EmotiBitProto {
     const val DEVICE_CTRL_PORT = 3131
     const val DEFAULT_DATA_PORT = 3132
     const val DEFAULT_CTRL_BACK_PORT = 3133
+    const val DEFAULT_DP = DEFAULT_DATA_PORT
+    const val DEFAULT_CP = DEFAULT_CTRL_BACK_PORT
 
     // Legacy OSC constants retained for parsers and existing UI components.
     const val OSC_ADDR_ADVERTISE = "/EmotiBit/Advertise"

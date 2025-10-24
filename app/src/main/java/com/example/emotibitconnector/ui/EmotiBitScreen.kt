@@ -43,6 +43,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.emotibitconnector.EmotiBitUiState
 import com.example.emotibitconnector.EmotiBitViewModel
 import com.example.emotibitconnector.Logx
+import com.example.emotibitconnector.UiDiscovered
 import com.example.emotibitconnector.UiLogEntry
 import com.example.emotibitconnector.network.EmotiBitProto
 import com.example.emotibitconnector.ui.theme.EmotiBitConnectorTheme
@@ -63,6 +64,8 @@ fun EmotiBitConnectorApp() {
         onRecordFileStemChange = viewModel::updateRecordFileStem,
         onStartClick = viewModel::startSession,
         onStopClick = viewModel::stopSession,
+        onScanClick = viewModel::scanDevices,
+        onUseDiscovered = viewModel::applyDiscovered,
         onStartRecording = viewModel::startRecording,
         onStopRecording = viewModel::stopRecording,
         onSaveAs = viewModel::setRecordUri,
@@ -84,6 +87,8 @@ fun EmotiBitScreen(
     onRecordFileStemChange: (String) -> Unit,
     onStartClick: () -> Unit,
     onStopClick: () -> Unit,
+    onScanClick: () -> Unit,
+    onUseDiscovered: (String) -> Unit,
     onStartRecording: () -> Unit,
     onStopRecording: () -> Unit,
     onSaveAs: (Uri?) -> Unit,
@@ -128,14 +133,67 @@ fun EmotiBitScreen(
                 text = "Set the EmotiBit device IP (from AP client list) then press Start to open UDP/TCP session.",
                 style = MaterialTheme.typography.bodyMedium
             )
-            OutlinedTextField(
-                value = state.deviceIpText,
-                onValueChange = onDeviceIpChange,
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                label = { Text("Device IP") },
-                placeholder = { Text("e.g. 192.168.50.101") }
-            )
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = state.deviceIpText,
+                    onValueChange = onDeviceIpChange,
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    label = { Text("Device IP") },
+                    placeholder = { Text("e.g. 192.168.50.101") }
+                )
+                Button(
+                    onClick = onScanClick,
+                    enabled = !state.isScanning,
+                    modifier = Modifier.align(Alignment.CenterVertically)
+                ) {
+                    Text(if (state.isScanning) "Scanning…" else "Scan")
+                }
+            }
+            if (state.isScanning) {
+                Text(
+                    text = "Scanning current subnet for EmotiBit…",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            if (state.discoveredDevices.isNotEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = "Discovered devices",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    state.discoveredDevices.forEach { device ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = buildString {
+                                    append(device.ip)
+                                    append(" · ")
+                                    append(device.deviceId ?: "Unknown")
+                                },
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            TextButton(onClick = { onUseDiscovered(device.ip) }) {
+                                Text("Use")
+                            }
+                        }
+                        Divider()
+                    }
+                }
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -167,6 +225,7 @@ fun EmotiBitScreen(
             )
             ReadOnlyInfoField("Local Wi-Fi IPv4", state.localWifiIp ?: "<unknown>")
             ReadOnlyInfoField("Broadcast IPv4", state.broadcastIp ?: "<unknown>")
+            ReadOnlyInfoField("Subnet Prefix", state.localWifiPrefix?.let { "/$it" } ?: "<unknown>")
             Divider()
             Text(
                 text = "Connection",
@@ -368,7 +427,10 @@ private fun buildDiagnostics(state: EmotiBitUiState): String {
     val builder = StringBuilder()
     builder.appendLine("=== EmotiBit Diagnostics Snapshot ===")
     builder.appendLine("deviceIp=${state.deviceIpText.ifBlank { "<unset>" }} dp=${state.dpText} cp=${state.cpText} interval=${state.ecIntervalText}")
-    builder.appendLine("localWiFiIp=${state.localWifiIp ?: "<unknown>"} broadcast=${state.broadcastIp ?: "<unknown>"}")
+    builder.appendLine(
+        "localWiFiIp=${state.localWifiIp ?: "<unknown>"} broadcast=${state.broadcastIp ?: "<unknown>"} prefix=${state.localWifiPrefix?.let { "/$it" } ?: "<unknown>"}"
+    )
+    builder.appendLine("discoveries=${state.discoveredDevices.size} scanning=${state.isScanning}")
     builder.appendLine("packets=${state.packetsRx} lastSender=${state.lastSender ?: "<none>"}")
     builder.appendLine("lastPayload=${state.lastPayloadPreview ?: "<none>"}")
     builder.appendLine("recording=${state.isRecordingCsv} rows=${state.recordRows} target=${state.recordTarget ?: "<none>"}")
@@ -396,7 +458,9 @@ private fun EmotiBitScreenPreview() {
                 ecIntervalText = "1000",
                 localWifiIp = "192.168.50.5",
                 broadcastIp = "192.168.50.255",
+                localWifiPrefix = 24,
                 isStreaming = true,
+                isScanning = false,
                 packetsRx = 42,
                 lastSender = "192.168.50.20:40000",
                 lastPayloadPreview = "1761288846,77,4,EC,1,100,CP,3133,DP,3132",
@@ -404,6 +468,7 @@ private fun EmotiBitScreenPreview() {
                     UiLogEntry(1, "Session established dp=3132 cp=3133", System.currentTimeMillis()),
                     UiLogEntry(2, "UDP packet received", System.currentTimeMillis())
                 ),
+                discoveredDevices = listOf(UiDiscovered("192.168.50.36", "MD-V5-0000241")),
                 recordFileStem = "EmotiBit-20250101-000000",
                 recordResolvedName = "EmotiBit-20250101-000000.csv",
                 isRecordingCsv = true,
@@ -417,6 +482,8 @@ private fun EmotiBitScreenPreview() {
             onRecordFileStemChange = {},
             onStartClick = {},
             onStopClick = {},
+            onScanClick = {},
+            onUseDiscovered = {},
             onStartRecording = {},
             onStopRecording = {},
             onSaveAs = {},

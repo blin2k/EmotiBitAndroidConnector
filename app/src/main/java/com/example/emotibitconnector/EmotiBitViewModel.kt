@@ -1,12 +1,18 @@
 package com.example.emotibitconnector
 
 import android.app.Application
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.emotibitconnector.Logx
 import com.example.emotibitconnector.network.EmotiBitClient
 import com.example.emotibitconnector.network.EmotiBitProto
+import com.example.emotibitconnector.network.SessionConfig
 import com.example.emotibitconnector.CsvRecorder
 import java.net.Inet4Address
 import java.net.InetAddress
@@ -23,6 +29,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlin.text.Charsets
 
 class EmotiBitViewModel(
@@ -32,6 +39,20 @@ class EmotiBitViewModel(
     private val client = EmotiBitClient(application, viewModelScope)
     private val recorder = CsvRecorder(application, viewModelScope)
     private val logCounter = AtomicLong(0)
+    private val connectivityManager =
+        application.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    private val wifiRequest = NetworkRequest.Builder()
+        .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+        .build()
+    private val wifiCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            handleWifiChanged("available")
+        }
+
+        override fun onLost(network: Network) {
+            handleWifiChanged("lost")
+        }
+    }
 
     private val _uiState = MutableStateFlow(EmotiBitUiState())
     val uiState: StateFlow<EmotiBitUiState> = _uiState.asStateFlow()
@@ -46,6 +67,8 @@ class EmotiBitViewModel(
         }
         refreshLocalNetworkInfo()
         observeRecorder()
+        runCatching { connectivityManager.registerNetworkCallback(wifiRequest, wifiCallback) }
+            .onFailure { Logx.e("Failed to register Wi-Fi callback", it) }
     }
 
     fun updateDeviceIp(value: String) {
@@ -106,37 +129,45 @@ class EmotiBitViewModel(
         val initialCp = state.cpText.toIntOrNull()
         val interval = state.ecIntervalText.toLongOrNull() ?: 1_000L
 
-        appendLog("Starting session… deviceIp=${deviceIp.hostAddress} initialDp=$initialDp initialCp=${initialCp ?: "auto"} interval=${interval}ms")
+        val config = SessionConfig(
+            deviceIp = deviceIp,
+            initialDp = initialDp,
+            initialCp = initialCp,
+            ecIntervalMs = interval
+        )
 
-        runCatching {
-            client.startSession(
-                config = com.example.emotibitconnector.network.SessionConfig(
-                    deviceIp = deviceIp,
-                    initialDp = initialDp,
-                    initialCp = initialCp,
-                    ecIntervalMs = interval
-                )
-            ) { payload, length, address, port ->
-                handleIncomingPacket(payload, length, address, port)
+        viewModelScope.launch {
+            appendLog("Starting session… deviceIp=${deviceIp.hostAddress} initialDp=$initialDp initialCp=${initialCp ?: "auto"} interval=${interval}ms")
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val network = client.bindToWifiNetwork()
+                    requireNotNull(network) { "Wi-Fi network unavailable" }
+                    client.startSession(config) { payload, length, address, port ->
+                        handleIncomingPacket(payload, length, address, port)
+                    }
+                }
             }
-        }.onSuccess {
-            val (dp, cp) = client.currentPorts()
-            _uiState.update {
-                it.copy(
-                    dpText = dp.toString(),
-                    cpText = cp.toString(),
-                    isStreaming = true,
-                    packetsRx = 0,
-                    lastSender = null,
-                    lastPayloadPreview = null,
-                    errorMessage = null
-                )
+
+            result.onSuccess {
+                val (dp, cp) = client.currentPorts()
+                refreshLocalNetworkInfo()
+                _uiState.update {
+                    it.copy(
+                        dpText = dp.toString(),
+                        cpText = cp.toString(),
+                        isStreaming = true,
+                        packetsRx = 0,
+                        lastSender = null,
+                        lastPayloadPreview = null,
+                        errorMessage = null
+                    )
+                }
+                appendLog("Session established dp=$dp cp=$cp")
+            }.onFailure { throwable ->
+                Logx.e("Failed to start session", throwable)
+                setError(throwable.message ?: throwable.toString())
+                client.stopSession()
             }
-            appendLog("Session established dp=$dp cp=$cp")
-        }.onFailure { throwable ->
-            Logx.e("Failed to start session", throwable)
-            setError(throwable.message ?: throwable.toString())
-            client.stopSession()
         }
     }
 
@@ -149,6 +180,7 @@ class EmotiBitViewModel(
         _uiState.update {
             it.copy(isStreaming = false)
         }
+        refreshLocalNetworkInfo()
     }
 
     fun startRecording() {
@@ -209,6 +241,33 @@ class EmotiBitViewModel(
         }
     }
 
+    fun scanDevices() {
+        if (_uiState.value.isScanning) return
+        val cp = _uiState.value.cpText.toIntOrNull() ?: EmotiBitProto.DEFAULT_CTRL_BACK_PORT
+        val dp = _uiState.value.dpText.toIntOrNull() ?: EmotiBitProto.DEFAULT_DATA_PORT
+        viewModelScope.launch {
+            _uiState.update { it.copy(isScanning = true, discoveredDevices = emptyList()) }
+            appendLog("Scanning for EmotiBit devices…")
+            val result = withContext(Dispatchers.IO) {
+                runCatching { client.scanEmotiBits(ecCp = cp, ecDp = dp) }
+            }
+            result.onSuccess { devices ->
+                val uiDevices = devices.map { UiDiscovered(it.ip.hostAddress, it.deviceId) }
+                _uiState.update { it.copy(discoveredDevices = uiDevices, isScanning = false) }
+                appendLog("Scan found ${devices.size} device(s)")
+            }.onFailure { throwable ->
+                Logx.e("Scanning failed", throwable)
+                appendLog("Scan failed: ${throwable.message ?: throwable}")
+                _uiState.update { it.copy(isScanning = false) }
+            }
+        }
+    }
+
+    fun applyDiscovered(ip: String) {
+        _uiState.update { it.copy(deviceIpText = ip) }
+        appendLog("Device IP set from scan: $ip")
+    }
+
     fun clearError() {
         _uiState.update { it.copy(errorMessage = null, recordError = null) }
     }
@@ -248,17 +307,41 @@ class EmotiBitViewModel(
         Logx.i(message)
     }
 
+    private fun handleWifiChanged(event: String) {
+        viewModelScope.launch {
+            refreshLocalNetworkInfo()
+            if (_uiState.value.isStreaming) {
+                appendLog("Wi-Fi changed ($event); stopping session")
+                stopSession()
+            } else {
+                appendLog("Wi-Fi changed ($event)")
+            }
+        }
+    }
+
     private fun refreshLocalNetworkInfo() {
-        val info = resolveLocalNetworkInfo()
+        val info = client.getWifiNetInfo()
+        if (info != null) {
+            _uiState.update {
+                it.copy(
+                    localWifiIp = info.ipv4.hostAddress,
+                    broadcastIp = info.broadcast.hostAddress,
+                    localWifiPrefix = info.prefixLen
+                )
+            }
+            return
+        }
+        val fallback = resolveLocalNetworkInfoLegacy()
         _uiState.update {
             it.copy(
-                localWifiIp = info?.address?.hostAddress,
-                broadcastIp = info?.broadcast?.hostAddress
+                localWifiIp = fallback?.address?.hostAddress,
+                broadcastIp = fallback?.broadcast?.hostAddress,
+                localWifiPrefix = fallback?.prefix
             )
         }
     }
 
-    private fun resolveLocalNetworkInfo(): LocalNetworkInfo? {
+    private fun resolveLocalNetworkInfoLegacy(): LocalNetworkInfo? {
         val interfaces = NetworkInterface.getNetworkInterfaces() ?: return null
         while (interfaces.hasMoreElements()) {
             val ni = interfaces.nextElement()
@@ -268,7 +351,8 @@ class EmotiBitViewModel(
                 val address = iface.address
                 if (address is Inet4Address && address.isSiteLocalAddress && !address.isLoopbackAddress) {
                     val broadcast = iface.broadcast ?: continue
-                    return LocalNetworkInfo(address, broadcast)
+                    val prefix = runCatching { iface.networkPrefixLength.toInt() }.getOrNull()
+                    return LocalNetworkInfo(address, broadcast, prefix)
                 }
             }
         }
@@ -304,6 +388,7 @@ class EmotiBitViewModel(
             recorder.stop()
         }
         client.stopSession()
+        runCatching { connectivityManager.unregisterNetworkCallback(wifiCallback) }
         super.onCleared()
     }
 
@@ -317,7 +402,7 @@ class EmotiBitViewModel(
         return if (stem.lowercase(Locale.US).endsWith(".csv")) stem else "$stem.csv"
     }
 
-    data class LocalNetworkInfo(val address: InetAddress, val broadcast: InetAddress)
+    data class LocalNetworkInfo(val address: InetAddress, val broadcast: InetAddress, val prefix: Int?)
 
     companion object {
         private const val MAX_LOG_ITEMS = 200
@@ -331,6 +416,11 @@ data class UiLogEntry(
     val timestamp: Long
 )
 
+data class UiDiscovered(
+    val ip: String,
+    val deviceId: String?
+)
+
 data class EmotiBitUiState(
     val deviceIpText: String = "",
     val dpText: String = EmotiBitProto.DEFAULT_DATA_PORT.toString(),
@@ -338,12 +428,15 @@ data class EmotiBitUiState(
     val ecIntervalText: String = "1000",
     val localWifiIp: String? = null,
     val broadcastIp: String? = null,
+    val localWifiPrefix: Int? = null,
     val isStreaming: Boolean = false,
+    val isScanning: Boolean = false,
     val packetsRx: Long = 0,
     val lastSender: String? = null,
     val lastPayloadPreview: String? = null,
     val errorMessage: String? = null,
     val logEntries: List<UiLogEntry> = emptyList(),
+    val discoveredDevices: List<UiDiscovered> = emptyList(),
     val recordFileStem: String = "",
     val recordResolvedName: String = "",
     val recordUri: Uri? = null,

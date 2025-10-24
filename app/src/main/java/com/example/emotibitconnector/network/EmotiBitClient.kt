@@ -1,7 +1,12 @@
 package com.example.emotibitconnector.network
 
 import android.app.Application
-import com.example.emotibitconnector.Logx
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.os.Build
 import java.io.BufferedReader
 import java.io.BufferedWriter
 import java.io.InputStreamReader
@@ -16,6 +21,8 @@ import java.net.Socket
 import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.nio.charset.StandardCharsets
+import java.util.ArrayList
+import java.util.LinkedHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.CoroutineContext
@@ -23,8 +30,14 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CompletableDeferred
+import java.net.Inet4Address
+import java.nio.ByteBuffer
+import com.example.emotibitconnector.Logx
 
 /** Configuration for establishing a full EmotiBit Wi-Fi session. */
 data class SessionConfig(
@@ -42,6 +55,8 @@ class EmotiBitClient(
     private val scope: CoroutineScope,
     private val ioContext: CoroutineContext = Dispatchers.IO
 ) {
+
+    @Volatile private var boundWifi: Network? = null
 
     @Volatile private var udpSock: DatagramSocket? = null
     @Volatile private var tcpServer: ServerSocket? = null
@@ -63,12 +78,170 @@ class EmotiBitClient(
 
     fun currentPorts(): Pair<Int, Int> = chosenDp to chosenCp
 
+    data class NetInfo(
+        val ipv4: Inet4Address,
+        val prefixLen: Int,
+        val broadcast: Inet4Address
+    )
+
+    data class DiscoveredDevice(
+        val ip: InetAddress,
+        val deviceId: String?
+    )
+
+    suspend fun bindToWifiNetwork(context: Context = app): Network? = withContext(ioContext) {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val cached = boundWifi?.takeIf { isWifiNetwork(cm, it) }
+        if (cached != null) {
+            Logx.i("Reusing previously bound Wi-Fi network ${cached}")
+            bindProcessToNetwork(cm, cached)
+            return@withContext cached
+        }
+
+        val existing = findExistingWifiNetwork(cm)
+        if (existing != null) {
+            Logx.i("Found active Wi-Fi network without request: $existing")
+            bindProcessToNetwork(cm, existing)
+            return@withContext existing.also { boundWifi = it }
+        }
+
+        val request = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .build()
+        val result = CompletableDeferred<Network?>()
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                if (!result.isCompleted) {
+                    result.complete(network)
+                }
+            }
+
+            override fun onUnavailable() {
+                if (!result.isCompleted) {
+                    result.complete(null)
+                }
+            }
+        }
+        cm.requestNetwork(request, callback)
+        try {
+            val network = withTimeout(NETWORK_BIND_TIMEOUT_MS) { result.await() }
+            if (network != null) {
+                Logx.i("Wi-Fi network request succeeded: $network")
+                bindProcessToNetwork(cm, network)
+                boundWifi = network
+            } else {
+                Logx.w("Wi-Fi network request returned null")
+            }
+            network
+        } catch (ex: Exception) {
+            Logx.e("Failed to bind to Wi-Fi network", ex)
+            null
+        } finally {
+            runCatching { cm.unregisterNetworkCallback(callback) }
+        }
+    }
+
+    fun unbindWifi(context: Context = app) {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        Logx.i("Unbinding process network from Wi-Fi")
+        bindProcessToNetwork(cm, null)
+        boundWifi = null
+    }
+
+    fun currentWifiNetInfo(context: Context = app): NetInfo? {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val network = boundWifi?.takeIf { isWifiNetwork(cm, it) }
+            ?: findExistingWifiNetwork(cm)
+            ?: return null
+        if (boundWifi != network) {
+            bindProcessToNetwork(cm, network)
+        }
+        val linkProps = cm.getLinkProperties(network) ?: return null
+        val linkAddress = linkProps.linkAddresses.firstOrNull { it.address is Inet4Address } ?: return null
+        val ipv4 = linkAddress.address as? Inet4Address ?: return null
+        val prefix = linkAddress.prefixLength
+        val broadcast = computeBroadcast(ipv4, prefix)
+        Logx.i("Wi-Fi net info ip=${ipv4.hostAddress} prefix=$prefix broadcast=${broadcast.hostAddress}")
+        return NetInfo(ipv4, prefix, broadcast)
+    }
+
+    suspend fun scanEmotiBits(
+        context: Context = app,
+        ecCp: Int = EmotiBitProto.DEFAULT_CTRL_BACK_PORT,
+        ecDp: Int = EmotiBitProto.DEFAULT_DATA_PORT,
+        timeoutMs: Long = 1_500L,
+        maxHosts: Int = 256
+    ): List<DiscoveredDevice> = withContext(ioContext) {
+        val network = bindToWifiNetwork(context) ?: run {
+            Logx.w("scanEmotiBits: no Wi-Fi network bound")
+            return@withContext emptyList<DiscoveredDevice>()
+        }
+        val net = currentWifiNetInfo(context) ?: run {
+            Logx.w("scanEmotiBits: unable to resolve Wi-Fi net info")
+            return@withContext emptyList<DiscoveredDevice>()
+        }
+
+        val hosts = computeHostRange(net.ipv4, net.prefixLen, maxHosts)
+        Logx.i("Scan: subnet /${net.prefixLen}, hosts=${hosts.size}, broadcast=${net.broadcast.hostAddress}")
+
+        val socket = DatagramSocket().apply {
+            soTimeout = timeoutMs.toInt()
+            broadcast = true
+        }
+        runCatching { network.bindSocket(socket) }
+
+        fun sendLine(dst: InetAddress, line: String) {
+            val bytes = (line + "\n").toByteArray(StandardCharsets.US_ASCII)
+            val packet = DatagramPacket(bytes, bytes.size, InetSocketAddress(dst, EmotiBitProto.DEVICE_CTRL_PORT))
+            runCatching { socket.send(packet) }
+                .onFailure { Logx.w("Scan: failed to send to ${dst.hostAddress}", it) }
+        }
+
+        val ts = nowSec()
+        val he = EmotiBitProto.buildHe(ts)
+        val ecLine = EmotiBitProto.buildEc(ts, 1, ecCp, ecDp)
+
+        runCatching { sendLine(InetAddress.getByName("255.255.255.255"), he) }
+        runCatching { sendLine(net.broadcast, he) }
+
+        hosts.forEach { host ->
+            sendLine(host, he)
+            sendLine(host, ecLine)
+        }
+
+        val discovered = LinkedHashMap<String, DiscoveredDevice>()
+        val buffer = ByteArray(2048)
+        val startTime = System.currentTimeMillis()
+        while (System.currentTimeMillis() - startTime < timeoutMs) {
+            try {
+                val packet = DatagramPacket(buffer, buffer.size)
+                socket.receive(packet)
+                val payload = String(packet.data, 0, packet.length, StandardCharsets.US_ASCII)
+                if (payload.contains(",HH,")) {
+                    val deviceId = parseDeviceIdFromHh(payload)
+                    val key = packet.address.hostAddress
+                    if (discovered.putIfAbsent(key, DiscoveredDevice(packet.address, deviceId)) == null) {
+                        Logx.i("Scan: discovered $key id=${deviceId ?: "Unknown"}")
+                    }
+                }
+            } catch (_: SocketTimeoutException) {
+                break
+            }
+        }
+        socket.close()
+        discovered.values.toList()
+    }
+
     fun startSession(config: SessionConfig, onData: (ByteArray, Int, InetAddress, Int) -> Unit) {
         synchronized(lock) {
             stopSessionLocked()
             stopRequested = false
             dataCallback = onData
             Logx.i("Starting session with initial dp=${config.initialDp} cp=${config.initialCp ?: "auto"}")
+            val netInfo = currentWifiNetInfo()
+            if (netInfo == null) {
+                Logx.w("Starting session without Wi-Fi net info – ensure device is connected to hotspot")
+            }
             val binding = try {
                 bindSockets(config)
             } catch (ex: Exception) {
@@ -118,6 +291,7 @@ class EmotiBitClient(
     suspend fun sendHe() {
         val config = configRef ?: return
         val sendSocket = DatagramSocket()
+        boundWifi?.let { network -> runCatching { network.bindSocket(sendSocket) } }
         try {
             val payload = EmotiBitProto.buildHe(nowSec()).toByteArray(StandardCharsets.US_ASCII)
             val packet = DatagramPacket(
@@ -159,6 +333,9 @@ class EmotiBitClient(
         dataCallback = null
         ecSeq.set(0)
         Logx.i("Session stopped")
+        if (boundWifi != null) {
+            unbindWifi(app)
+        }
     }
 
     private fun bindSockets(config: SessionConfig): PortBinding {
@@ -172,6 +349,7 @@ class EmotiBitClient(
                     reuseAddress = true
                     soTimeout = 1_000
                     bind(InetSocketAddress(dpCandidate))
+                    boundWifi?.let { network -> runCatching { network.bindSocket(this) } }
                 }
                 server = ServerSocket().apply {
                     reuseAddress = true
@@ -268,6 +446,7 @@ class EmotiBitClient(
 
     private suspend fun runEcHeartbeat(deviceIp: InetAddress, intervalMs: Long) {
         val sendSocket = DatagramSocket()
+        boundWifi?.let { network -> runCatching { network.bindSocket(sendSocket) } }
         try {
             while (scope.isActive && !stopRequested) {
                 val seq = ecSeq.getAndIncrement()
@@ -292,6 +471,91 @@ class EmotiBitClient(
         }
     }
 
+    fun getWifiNetInfo(): NetInfo? = currentWifiNetInfo(app)
+
+    private fun computeHostRange(ip: Inet4Address, prefix: Int, cap: Int): List<InetAddress> {
+        if (prefix >= 31) return emptyList()
+        val mask = prefixToMask(prefix)
+        val ipInt = ipv4ToInt(ip)
+        val network = ipInt and mask
+        val broadcast = network or mask.inv()
+        val start = network + 1L
+        val end = broadcast - 1L
+        if (end < start) return emptyList()
+        val results = ArrayList<InetAddress>()
+        var current = start
+        while (current <= end && results.size < cap) {
+            if (current.toInt() != ipInt) {
+                results.add(intToInet(current.toInt()))
+            }
+            current++
+        }
+        return results
+    }
+
+    private fun ipv4ToInt(ip: Inet4Address): Int = ByteBuffer.wrap(ip.address).int
+
+    private fun intToInet(value: Int): Inet4Address {
+        val bytes = byteArrayOf(
+            ((value ushr 24) and 0xFF).toByte(),
+            ((value ushr 16) and 0xFF).toByte(),
+            ((value ushr 8) and 0xFF).toByte(),
+            (value and 0xFF).toByte()
+        )
+        return InetAddress.getByAddress(bytes) as Inet4Address
+    }
+
+    private fun computeBroadcast(ip: Inet4Address, prefix: Int): Inet4Address {
+        val mask = prefixToMask(prefix)
+        val ipInt = ipv4ToInt(ip)
+        val broadcast = ipInt or mask.inv()
+        return intToInet(broadcast)
+    }
+
+    private fun prefixToMask(prefix: Int): Int = when {
+        prefix <= 0 -> 0
+        prefix >= 32 -> -1
+        else -> -1 shl (32 - prefix)
+    }
+
+    private fun findExistingWifiNetwork(cm: ConnectivityManager): Network? {
+        cm.allNetworks?.forEach { network ->
+            if (isWifiNetwork(cm, network)) {
+                return network.also { boundWifi = it }
+            }
+        }
+        return null
+    }
+
+    private fun isWifiNetwork(cm: ConnectivityManager, network: Network?): Boolean {
+        if (network == null) return false
+        val caps = cm.getNetworkCapabilities(network) ?: return false
+        return caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+    }
+
+    private fun bindProcessToNetwork(cm: ConnectivityManager, network: Network?) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            cm.bindProcessToNetwork(network)
+        } else {
+            @Suppress("DEPRECATION")
+            val deprecated = network
+            @Suppress("DEPRECATION")
+            ConnectivityManager.setProcessDefaultNetwork(deprecated)
+        }
+        boundWifi = network
+        if (network != null) {
+            Logx.i("Process bound to Wi-Fi network $network")
+        } else {
+            Logx.i("Process network binding cleared")
+        }
+    }
+
+    private fun parseDeviceIdFromHh(message: String): String? {
+        val parts = message.split(',')
+        val index = parts.indexOf("DI")
+        return if (index >= 0 && index + 1 < parts.size) parts[index + 1].trim() else null
+    }
+
     private data class PortBinding(
         val dp: Int,
         val cp: Int,
@@ -304,5 +568,6 @@ class EmotiBitClient(
     companion object {
         private const val MAX_PORT_ATTEMPTS = 10
         private const val MAX_UDP_PACKET = 64 * 1024
+        private const val NETWORK_BIND_TIMEOUT_MS = 4_000L
     }
 }
