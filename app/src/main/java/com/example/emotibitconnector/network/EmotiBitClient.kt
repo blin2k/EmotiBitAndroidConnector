@@ -52,7 +52,7 @@ class EmotiBitClient(
     @Volatile private var udpJob: Job? = null
     @Volatile private var tcpJob: Job? = null
     @Volatile private var configRef: SessionConfig? = null
-    @Volatile private var dataCallback: ((ByteArray, Int, InetAddress) -> Unit)? = null
+    @Volatile private var dataCallback: ((ByteArray, Int, InetAddress, Int) -> Unit)? = null
     @Volatile private var stopRequested: Boolean = false
     private val ecSeq = AtomicInteger(0)
     private val tcpClientRef = AtomicReference<Socket>()
@@ -63,7 +63,7 @@ class EmotiBitClient(
 
     fun currentPorts(): Pair<Int, Int> = chosenDp to chosenCp
 
-    fun startSession(config: SessionConfig, onData: (ByteArray, Int, InetAddress) -> Unit) {
+    fun startSession(config: SessionConfig, onData: (ByteArray, Int, InetAddress, Int) -> Unit) {
         synchronized(lock) {
             stopSessionLocked()
             stopRequested = false
@@ -211,7 +211,7 @@ class EmotiBitClient(
                     Logx.i("UDP received count=$packetCount from ${packet.address.hostAddress}:${packet.port} len=${packet.length}")
                 }
                 val payload = packet.data.copyOf(packet.length)
-                dataCallback?.invoke(payload, packet.port, packet.address)
+                dataCallback?.invoke(payload, packet.length, packet.address, packet.port)
             }
         } catch (ex: Exception) {
             if (!stopRequested) {

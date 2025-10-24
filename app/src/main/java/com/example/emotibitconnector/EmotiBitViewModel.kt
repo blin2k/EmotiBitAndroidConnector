@@ -1,14 +1,20 @@
 package com.example.emotibitconnector
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.emotibitconnector.Logx
 import com.example.emotibitconnector.network.EmotiBitClient
 import com.example.emotibitconnector.network.EmotiBitProto
+import com.example.emotibitconnector.CsvRecorder
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.NetworkInterface
+import java.time.Instant
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -16,18 +22,30 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlin.text.Charsets
 
 class EmotiBitViewModel(
     application: Application
 ) : AndroidViewModel(application) {
 
     private val client = EmotiBitClient(application, viewModelScope)
+    private val recorder = CsvRecorder(application, viewModelScope)
     private val logCounter = AtomicLong(0)
+
     private val _uiState = MutableStateFlow(EmotiBitUiState())
     val uiState: StateFlow<EmotiBitUiState> = _uiState.asStateFlow()
 
     init {
+        val defaultStem = defaultCsvStem()
+        _uiState.update {
+            it.copy(
+                recordFileStem = defaultStem,
+                recordResolvedName = ensureCsvExtension(defaultStem)
+            )
+        }
         refreshLocalNetworkInfo()
+        observeRecorder()
     }
 
     fun updateDeviceIp(value: String) {
@@ -44,6 +62,26 @@ class EmotiBitViewModel(
 
     fun updateEcInterval(value: String) {
         _uiState.update { it.copy(ecIntervalText = value.filter(Char::isDigit)) }
+    }
+
+    fun updateRecordFileStem(value: String) {
+        val trimmed = value.trim()
+        val stem = if (trimmed.isNotEmpty()) trimmed else defaultCsvStem()
+        _uiState.update {
+            it.copy(
+                recordFileStem = stem,
+                recordResolvedName = ensureCsvExtension(stem)
+            )
+        }
+    }
+
+    fun setRecordUri(uri: Uri?) {
+        val previous = _uiState.value.recordUri
+        _uiState.update { it.copy(recordUri = uri, recordTarget = uri?.toString()) }
+        when {
+            uri != null -> appendLog("Recording destination set to $uri")
+            previous != null -> appendLog("Recording destination cleared")
+        }
     }
 
     fun startSession() {
@@ -78,16 +116,8 @@ class EmotiBitViewModel(
                     initialCp = initialCp,
                     ecIntervalMs = interval
                 )
-            ) { payload, port, address ->
-                val preview = payload.toPreview()
-                _uiState.update { current ->
-                    current.copy(
-                        packetsRx = current.packetsRx + 1,
-                        lastSender = "${address.hostAddress}:$port",
-                        lastPayloadPreview = preview,
-                        isStreaming = true
-                    )
-                }
+            ) { payload, length, address, port ->
+                handleIncomingPacket(payload, length, address, port)
             }
         }.onSuccess {
             val (dp, cp) = client.currentPorts()
@@ -112,10 +142,47 @@ class EmotiBitViewModel(
 
     fun stopSession() {
         client.stopSession()
+        viewModelScope.launch(Dispatchers.IO) {
+            recorder.stop()
+        }
         appendLog("Session stopped")
         _uiState.update {
             it.copy(isStreaming = false)
         }
+    }
+
+    fun startRecording() {
+        if (recorder.isRecording.value) return
+        val state = _uiState.value
+        val stem = state.recordFileStem.ifBlank { defaultCsvStem() }
+        val config = CsvRecorder.Config(
+            fileNameStem = stem,
+            useSafUri = state.recordUri
+        )
+        viewModelScope.launch {
+            runCatching { recorder.start(config) }
+                .onSuccess {
+                    _uiState.update {
+                        it.copy(
+                            recordFileStem = stem,
+                            recordResolvedName = ensureCsvExtension(stem)
+                        )
+                    }
+                    appendLog("Recording started")
+                }
+                .onFailure { throwable ->
+                    Logx.e("Failed to start recording", throwable)
+                    setError("Recording failed: ${throwable.message ?: throwable}")
+                }
+        }
+    }
+
+    fun stopRecording() {
+        if (!recorder.isRecording.value) return
+        viewModelScope.launch(Dispatchers.IO) {
+            recorder.stop()
+        }
+        appendLog("Recording stopped")
     }
 
     fun sendPn() {
@@ -143,7 +210,24 @@ class EmotiBitViewModel(
     }
 
     fun clearError() {
-        _uiState.update { it.copy(errorMessage = null) }
+        _uiState.update { it.copy(errorMessage = null, recordError = null) }
+    }
+
+    private fun handleIncomingPacket(payload: ByteArray, length: Int, address: InetAddress, port: Int) {
+        val ascii = String(payload, 0, length, Charsets.US_ASCII)
+        val timestamp = System.currentTimeMillis()
+        if (recorder.isRecording.value) {
+            recorder.append(timestamp, address.hostAddress, port, ascii)
+        }
+        val preview = ascii.take(MAX_PREVIEW_CHARS)
+        _uiState.update { current ->
+            current.copy(
+                packetsRx = current.packetsRx + 1,
+                lastSender = "${address.hostAddress}:$port",
+                lastPayloadPreview = preview,
+                isStreaming = true
+            )
+        }
     }
 
     private fun setError(message: String) {
@@ -191,22 +275,61 @@ class EmotiBitViewModel(
         return null
     }
 
+    private fun observeRecorder() {
+        viewModelScope.launch {
+            recorder.isRecording.collect { recording ->
+                _uiState.update { it.copy(isRecordingCsv = recording) }
+            }
+        }
+        viewModelScope.launch {
+            recorder.rowsWritten.collect { count ->
+                _uiState.update { it.copy(recordRows = count) }
+            }
+        }
+        viewModelScope.launch {
+            recorder.targetDisplay.collect { display ->
+                _uiState.update { it.copy(recordTarget = display.ifBlank { null }) }
+            }
+        }
+        viewModelScope.launch {
+            recorder.lastError.collect { error ->
+                _uiState.update { it.copy(recordError = error) }
+                error?.let { appendLog("Recorder error: $it") }
+            }
+        }
+    }
+
     override fun onCleared() {
+        runBlocking {
+            recorder.stop()
+        }
         client.stopSession()
         super.onCleared()
+    }
+
+    private fun defaultCsvStem(): String =
+        DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss", Locale.US)
+            .withZone(ZoneOffset.UTC)
+            .format(Instant.now())
+            .let { "EmotiBit-$it" }
+
+    private fun ensureCsvExtension(stem: String): String {
+        return if (stem.lowercase(Locale.US).endsWith(".csv")) stem else "$stem.csv"
     }
 
     data class LocalNetworkInfo(val address: InetAddress, val broadcast: InetAddress)
 
     companion object {
         private const val MAX_LOG_ITEMS = 200
+        private const val MAX_PREVIEW_CHARS = 80
     }
 }
 
-private fun ByteArray.toPreview(max: Int = 80): String {
-    val text = String(this, Charsets.US_ASCII)
-    return if (text.length <= max) text else text.substring(0, max)
-}
+data class UiLogEntry(
+    val id: Long,
+    val message: String,
+    val timestamp: Long
+)
 
 data class EmotiBitUiState(
     val deviceIpText: String = "",
@@ -220,11 +343,12 @@ data class EmotiBitUiState(
     val lastSender: String? = null,
     val lastPayloadPreview: String? = null,
     val errorMessage: String? = null,
-    val logEntries: List<UiLogEntry> = emptyList()
-)
-
-data class UiLogEntry(
-    val id: Long,
-    val message: String,
-    val timestamp: Long
+    val logEntries: List<UiLogEntry> = emptyList(),
+    val recordFileStem: String = "",
+    val recordResolvedName: String = "",
+    val recordUri: Uri? = null,
+    val isRecordingCsv: Boolean = false,
+    val recordRows: Long = 0,
+    val recordTarget: String? = null,
+    val recordError: String? = null
 )

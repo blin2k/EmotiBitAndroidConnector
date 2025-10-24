@@ -1,5 +1,8 @@
 package com.example.emotibitconnector.ui
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -7,11 +10,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -43,7 +46,6 @@ import com.example.emotibitconnector.Logx
 import com.example.emotibitconnector.UiLogEntry
 import com.example.emotibitconnector.network.EmotiBitProto
 import com.example.emotibitconnector.ui.theme.EmotiBitConnectorTheme
-import java.lang.StringBuilder
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -58,8 +60,12 @@ fun EmotiBitConnectorApp() {
         onDpChange = viewModel::updateDp,
         onCpChange = viewModel::updateCp,
         onEcIntervalChange = viewModel::updateEcInterval,
+        onRecordFileStemChange = viewModel::updateRecordFileStem,
         onStartClick = viewModel::startSession,
         onStopClick = viewModel::stopSession,
+        onStartRecording = viewModel::startRecording,
+        onStopRecording = viewModel::stopRecording,
+        onSaveAs = viewModel::setRecordUri,
         onSendPn = viewModel::sendPn,
         onSendPo = viewModel::sendPo,
         onSendHe = viewModel::sendHe,
@@ -75,8 +81,12 @@ fun EmotiBitScreen(
     onDpChange: (String) -> Unit,
     onCpChange: (String) -> Unit,
     onEcIntervalChange: (String) -> Unit,
+    onRecordFileStemChange: (String) -> Unit,
     onStartClick: () -> Unit,
     onStopClick: () -> Unit,
+    onStartRecording: () -> Unit,
+    onStopRecording: () -> Unit,
+    onSaveAs: (Uri?) -> Unit,
     onSendPn: () -> Unit,
     onSendPo: () -> Unit,
     onSendHe: () -> Unit,
@@ -92,6 +102,19 @@ fun EmotiBitScreen(
         val scrollState = rememberScrollState()
         val clipboardManager = LocalClipboardManager.current
         val diagnostics = remember(state) { buildDiagnostics(state) }
+        val suggestedName = remember(state.recordResolvedName, state.recordFileStem) {
+            ensureCsvExtension(
+                when {
+                    state.recordResolvedName.isNotBlank() -> state.recordResolvedName
+                    state.recordFileStem.isNotBlank() -> state.recordFileStem
+                    else -> "EmotiBit-${System.currentTimeMillis()}"
+                }
+            )
+        }
+        val saveAsLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.CreateDocument("text/csv"),
+            onResult = onSaveAs
+        )
 
         Column(
             modifier = Modifier
@@ -181,7 +204,48 @@ fun EmotiBitScreen(
                     Text("Send HE")
                 }
             }
-            DiagnosticsSummary(state)
+            Divider()
+            Text(
+                text = "Recording",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            OutlinedTextField(
+                value = state.recordFileStem,
+                onValueChange = onRecordFileStemChange,
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Filename (stem)") },
+                placeholder = { Text("EmotiBit-<timestamp>") }
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Button(
+                    onClick = onStartRecording,
+                    enabled = !state.isRecordingCsv
+                ) {
+                    Text("Start Recording")
+                }
+                OutlinedButton(
+                    onClick = onStopRecording,
+                    enabled = state.isRecordingCsv
+                ) {
+                    Text("Stop Recording")
+                }
+                TextButton(onClick = { saveAsLauncher.launch(suggestedName) }) {
+                    Text("Save As…")
+                }
+            }
+            RecordingStatus(state)
+            state.recordError?.let { error ->
+                Text(
+                    text = error,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
             state.errorMessage?.let { message ->
                 ErrorBanner(message = message, onDismiss = onDismissError)
             }
@@ -223,29 +287,22 @@ fun EmotiBitScreen(
 }
 
 @Composable
-private fun DiagnosticsSummary(state: EmotiBitUiState) {
+private fun RecordingStatus(state: EmotiBitUiState) {
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         Text(
-            text = if (state.isStreaming) "Status: Streaming" else "Status: Idle",
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.SemiBold
+            text = "Recording: ${if (state.isRecordingCsv) "Yes" else "No"}",
+            style = MaterialTheme.typography.bodyMedium
         )
         Text(
-            text = "Packets received: ${state.packetsRx}",
+            text = "Rows: ${state.recordRows}",
             style = MaterialTheme.typography.bodySmall
         )
-        state.lastSender?.let { sender ->
+        state.recordTarget?.let { target ->
             Text(
-                text = "Last sender: $sender",
-                style = MaterialTheme.typography.bodySmall
-            )
-        }
-        state.lastPayloadPreview?.let { preview ->
-            Text(
-                text = "Last payload: $preview",
+                text = "Target: $target",
                 style = MaterialTheme.typography.bodySmall
             )
         }
@@ -314,11 +371,17 @@ private fun buildDiagnostics(state: EmotiBitUiState): String {
     builder.appendLine("localWiFiIp=${state.localWifiIp ?: "<unknown>"} broadcast=${state.broadcastIp ?: "<unknown>"}")
     builder.appendLine("packets=${state.packetsRx} lastSender=${state.lastSender ?: "<none>"}")
     builder.appendLine("lastPayload=${state.lastPayloadPreview ?: "<none>"}")
+    builder.appendLine("recording=${state.isRecordingCsv} rows=${state.recordRows} target=${state.recordTarget ?: "<none>"}")
     builder.appendLine("logs (last ${state.logEntries.takeLast(20).size} lines)")
     state.logEntries.takeLast(20).forEach { entry ->
         builder.appendLine("${entry.timestamp}: ${entry.message}")
     }
     return builder.toString()
+}
+
+private fun ensureCsvExtension(name: String): String {
+    if (name.isBlank()) return "EmotiBit-${System.currentTimeMillis()}.csv"
+    return if (name.lowercase(Locale.US).endsWith(".csv")) name else "$name.csv"
 }
 
 @Preview(showBackground = true)
@@ -340,14 +403,23 @@ private fun EmotiBitScreenPreview() {
                 logEntries = listOf(
                     UiLogEntry(1, "Session established dp=3132 cp=3133", System.currentTimeMillis()),
                     UiLogEntry(2, "UDP packet received", System.currentTimeMillis())
-                )
+                ),
+                recordFileStem = "EmotiBit-20250101-000000",
+                recordResolvedName = "EmotiBit-20250101-000000.csv",
+                isRecordingCsv = true,
+                recordRows = 1200,
+                recordTarget = ".../EmotiBit/EmotiBit-20250101-000000.csv"
             ),
             onDeviceIpChange = {},
             onDpChange = {},
             onCpChange = {},
             onEcIntervalChange = {},
+            onRecordFileStemChange = {},
             onStartClick = {},
             onStopClick = {},
+            onStartRecording = {},
+            onStopRecording = {},
+            onSaveAs = {},
             onSendPn = {},
             onSendPo = {},
             onSendHe = {},
