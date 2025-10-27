@@ -11,14 +11,17 @@ import android.net.NetworkRequest
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.PowerManager
 import android.provider.MediaStore
+import android.net.wifi.WifiManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.emotibitconnector.CsvRecorder
 import com.example.emotibitconnector.Logx
+import com.example.emotibitconnector.SessionService
 import com.example.emotibitconnector.network.EmotiBitClient
 import com.example.emotibitconnector.network.EmotiBitProto
 import com.example.emotibitconnector.network.SessionConfig
-import com.example.emotibitconnector.CsvRecorder
 import java.io.File
 import java.net.Inet4Address
 import java.net.InetAddress
@@ -44,6 +47,9 @@ class EmotiBitViewModel(
 
     private val client = EmotiBitClient(application, viewModelScope)
     private val recorder = CsvRecorder(application, viewModelScope)
+    private val recordingWakeManager = RecordingWakeManager(application)
+    private val sessionWakeManager = SessionWakeManager(application)
+    private val wifiLockManager = WifiLockManager(application)
     private val logCounter = AtomicLong(0)
     private val recordingsDir = File(application.filesDir, "EmotiBit")
     private val connectivityManager =
@@ -144,6 +150,7 @@ class EmotiBitViewModel(
             ecIntervalMs = interval
         )
 
+        val appContext = getApplication<Application>()
         viewModelScope.launch {
             appendLog("Starting session… deviceIp=${deviceIp.hostAddress} initialDp=$initialDp initialCp=${initialCp ?: "auto"} interval=${interval}ms")
             val result = withContext(Dispatchers.IO) {
@@ -159,6 +166,9 @@ class EmotiBitViewModel(
             result.onSuccess {
                 val (dp, cp) = client.currentPorts()
                 refreshLocalNetworkInfo()
+                wifiLockManager.acquire()
+                sessionWakeManager.acquire()
+                SessionService.start(appContext, deviceIp.hostAddress, dp, cp)
                 _uiState.update {
                     it.copy(
                         dpText = dp.toString(),
@@ -175,11 +185,18 @@ class EmotiBitViewModel(
                 Logx.e("Failed to start session", throwable)
                 setError(throwable.message ?: throwable.toString())
                 client.stopSession()
+                wifiLockManager.release()
+                sessionWakeManager.release()
+                SessionService.stop(appContext)
             }
         }
     }
 
     fun stopSession() {
+        val appContext = getApplication<Application>()
+        wifiLockManager.release()
+        sessionWakeManager.release()
+        SessionService.stop(appContext)
         client.stopSession()
         viewModelScope.launch(Dispatchers.IO) {
             recorder.stop()
@@ -373,6 +390,70 @@ class EmotiBitViewModel(
         }
     }
 
+    private class RecordingWakeManager(app: Application) {
+        private val powerManager = app.getSystemService(Context.POWER_SERVICE) as PowerManager?
+        private val wakeLock: PowerManager.WakeLock? = powerManager?.newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "EmotiBit:RecordingWake"
+        )?.apply { setReferenceCounted(false) }
+
+        fun acquire() {
+            val lock = wakeLock ?: return
+            if (!lock.isHeld) {
+                runCatching { lock.acquire() }
+            }
+        }
+
+        fun release() {
+            val lock = wakeLock ?: return
+            if (lock.isHeld) {
+                runCatching { lock.release() }
+            }
+        }
+    }
+
+    private class SessionWakeManager(app: Application) {
+        private val powerManager = app.getSystemService(Context.POWER_SERVICE) as PowerManager?
+        private val wakeLock: PowerManager.WakeLock? = powerManager?.newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "EmotiBit:Session"
+        )?.apply { setReferenceCounted(false) }
+
+        fun acquire() {
+            val lock = wakeLock ?: return
+            if (!lock.isHeld) {
+                runCatching { lock.acquire() }
+            }
+        }
+
+        fun release() {
+            val lock = wakeLock ?: return
+            if (lock.isHeld) {
+                runCatching { lock.release() }
+            }
+        }
+    }
+
+    private class WifiLockManager(app: Application) {
+        private val wifiManager = app.getSystemService(Context.WIFI_SERVICE) as WifiManager?
+        private val wifiLock = wifiManager?.createWifiLock(
+            WifiManager.WIFI_MODE_FULL_HIGH_PERF,
+            "EmotiBit:WifiLock"
+        )?.apply { setReferenceCounted(false) }
+        private val multicastLock = wifiManager?.createMulticastLock("EmotiBit:Multicast")
+            ?.apply { setReferenceCounted(false) }
+
+        fun acquire() {
+            wifiLock?.let { lock -> if (!lock.isHeld) runCatching { lock.acquire() } }
+            multicastLock?.let { lock -> if (!lock.isHeld) runCatching { lock.acquire() } }
+        }
+
+        fun release() {
+            wifiLock?.let { lock -> if (lock.isHeld) runCatching { lock.release() } }
+            multicastLock?.let { lock -> if (lock.isHeld) runCatching { lock.release() } }
+        }
+    }
+
     fun sendPn() {
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { client.sendStart("PN") }
@@ -553,6 +634,11 @@ class EmotiBitViewModel(
     private fun observeRecorder() {
         viewModelScope.launch {
             recorder.isRecording.collect { recording ->
+                if (recording) {
+                    recordingWakeManager.acquire()
+                } else {
+                    recordingWakeManager.release()
+                }
                 _uiState.update { it.copy(isRecordingCsv = recording) }
             }
         }
@@ -580,6 +666,10 @@ class EmotiBitViewModel(
         }
         client.stopSession()
         runCatching { connectivityManager.unregisterNetworkCallback(wifiCallback) }
+        recordingWakeManager.release()
+        wifiLockManager.release()
+        sessionWakeManager.release()
+        SessionService.stop(getApplication())
         super.onCleared()
     }
 
@@ -619,11 +709,11 @@ data class RecordFileInfo(
     val lastModifiedMs: Long
 )
 
-data class EmotiBitUiState(
-    val deviceIpText: String = "",
-    val dpText: String = EmotiBitProto.DEFAULT_DATA_PORT.toString(),
-    val cpText: String = EmotiBitProto.DEFAULT_CTRL_BACK_PORT.toString(),
-    val ecIntervalText: String = "5000",
+    data class EmotiBitUiState(
+        val deviceIpText: String = "",
+        val dpText: String = EmotiBitProto.DEFAULT_DATA_PORT.toString(),
+        val cpText: String = EmotiBitProto.DEFAULT_CTRL_BACK_PORT.toString(),
+        val ecIntervalText: String = "1000",
     val localWifiIp: String? = null,
     val broadcastIp: String? = null,
     val localWifiPrefix: Int? = null,

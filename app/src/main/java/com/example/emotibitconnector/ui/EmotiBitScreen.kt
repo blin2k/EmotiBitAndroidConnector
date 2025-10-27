@@ -1,6 +1,9 @@
 package com.example.emotibitconnector.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.text.format.Formatter
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -52,6 +55,7 @@ import com.example.emotibitconnector.UiDiscovered
 import com.example.emotibitconnector.UiLogEntry
 import com.example.emotibitconnector.network.EmotiBitProto
 import com.example.emotibitconnector.ui.theme.EmotiBitConnectorTheme
+import androidx.core.content.ContextCompat
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -119,6 +123,7 @@ fun EmotiBitScreen(
     ) { innerPadding ->
         val scrollState = rememberScrollState()
         val clipboardManager = LocalClipboardManager.current
+        val context = LocalContext.current
         val diagnostics = remember(state) { buildDiagnostics(state) }
         val suggestedName = remember(state.recordResolvedName, state.recordFileStem) {
             ensureCsvExtension(
@@ -133,6 +138,27 @@ fun EmotiBitScreen(
             contract = ActivityResultContracts.CreateDocument("text/csv"),
             onResult = onSaveAs
         )
+        val notificationPermissionLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.RequestPermission()
+        ) {
+            onStartClick()
+        }
+
+        val handleStartClick = {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val granted = ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+                if (!granted) {
+                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    onStartClick()
+                }
+            } else {
+                onStartClick()
+            }
+        }
 
         Column(
             modifier = Modifier
@@ -250,7 +276,7 @@ fun EmotiBitScreen(
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Button(
-                    onClick = onStartClick,
+                    onClick = handleStartClick,
                     enabled = state.deviceIpText.isNotBlank()
                 ) {
                     Text("Start listening & connect")
@@ -274,6 +300,16 @@ fun EmotiBitScreen(
                 }
                 OutlinedButton(onClick = onSendHe, enabled = state.deviceIpText.isNotBlank()) {
                     Text("Send HE")
+                }
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                TextButton(onClick = {
+                    val intent = android.content.Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:${context.packageName}")
+                    }
+                    runCatching { context.startActivity(intent) }
+                }) {
+                    Text("Battery optimization tips")
                 }
             }
             Divider()

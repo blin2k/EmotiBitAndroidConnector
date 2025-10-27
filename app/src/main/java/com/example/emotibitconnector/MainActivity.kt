@@ -1,7 +1,5 @@
 package com.example.emotibitconnector
 
-import android.content.Context
-import android.net.wifi.WifiManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -15,52 +13,16 @@ import kotlin.jvm.Volatile
 
 class MainActivity : ComponentActivity() {
 
-    private var multicastLock: WifiManager.MulticastLock? = null
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         logManifestPermissionsOnce()
-        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-        multicastLock = wifiManager?.createMulticastLock("emotibit-mlock")?.apply {
-            setReferenceCounted(false)
-        }
+        SessionService.ensureChannel(this)
         enableEdgeToEdge()
         setContent {
             EmotiBitConnectorTheme {
                 EmotiBitConnectorApp()
             }
         }
-    }
-
-    override fun onStart() {
-        super.onStart()
-        multicastLock?.let { lock ->
-            if (!lock.isHeld) {
-                lock.acquire()
-                Logx.i("MulticastLock acquired")
-            }
-        }
-    }
-
-    override fun onStop() {
-        multicastLock?.let { lock ->
-            if (lock.isHeld) {
-                lock.release()
-                Logx.i("MulticastLock released")
-            }
-        }
-        super.onStop()
-    }
-
-    override fun onDestroy() {
-        multicastLock?.let { lock ->
-            if (lock.isHeld) {
-                lock.release()
-                Logx.i("MulticastLock released")
-            }
-        }
-        multicastLock = null
-        super.onDestroy()
     }
 
     private fun logManifestPermissionsOnce() {
@@ -91,7 +53,8 @@ class MainActivity : ComponentActivity() {
             Manifest.permission.INTERNET,
             Manifest.permission.ACCESS_WIFI_STATE,
             Manifest.permission.CHANGE_WIFI_MULTICAST_STATE,
-            Manifest.permission.WAKE_LOCK
+            Manifest.permission.WAKE_LOCK,
+            Manifest.permission.POST_NOTIFICATIONS
         )
         @Volatile
         private var permissionsLogged = false

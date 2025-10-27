@@ -9,6 +9,7 @@ import android.net.NetworkRequest
 import android.os.Build
 import java.io.BufferedReader
 import java.io.BufferedWriter
+import java.io.IOException
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.BindException
@@ -26,15 +27,15 @@ import java.util.LinkedHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.CoroutineContext
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import java.net.Inet4Address
 import java.nio.ByteBuffer
 import com.example.emotibitconnector.Logx
@@ -445,10 +446,20 @@ class EmotiBitClient(
     }
 
     private suspend fun runEcHeartbeat(deviceIp: InetAddress, intervalMs: Long) {
-        val sendSocket = DatagramSocket()
-        boundWifi?.let { network -> runCatching { network.bindSocket(sendSocket) } }
+        var sendSocket: DatagramSocket? = null
         try {
             while (scope.isActive && !stopRequested) {
+                if (sendSocket == null || sendSocket!!.isClosed) {
+                    sendSocket = createEcSocket()
+                    if (sendSocket == null) {
+                        if (!stopRequested) {
+                            Logx.w("EC heartbeat socket unavailable; retrying in $EC_SOCKET_RETRY_DELAY_MS ms")
+                            delay(EC_SOCKET_RETRY_DELAY_MS)
+                        }
+                        continue
+                    }
+                }
+
                 val seq = ecSeq.getAndIncrement()
                 val line = EmotiBitProto.buildEc(nowSec(), seq, chosenCp, chosenDp)
                 val payload = line.toByteArray(StandardCharsets.US_ASCII)
@@ -457,17 +468,47 @@ class EmotiBitClient(
                     payload.size,
                     InetSocketAddress(deviceIp, EmotiBitProto.DEVICE_CTRL_PORT)
                 )
-                sendSocket.send(packet)
-                Logx.i("EC -> ${deviceIp.hostAddress}:${EmotiBitProto.DEVICE_CTRL_PORT} seq=$seq line=${line.trim()}")
-                delay(intervalMs)
+
+                try {
+                    sendSocket!!.send(packet)
+                    Logx.i("EC -> ${deviceIp.hostAddress}:${EmotiBitProto.DEVICE_CTRL_PORT} seq=$seq line=${line.trim()}")
+                    delay(intervalMs)
+                } catch (io: IOException) {
+                    if (!stopRequested) {
+                        Logx.w("EC heartbeat send failed; recreating socket", io)
+                    }
+                    runCatching { sendSocket?.close() }
+                    sendSocket = null
+                    if (!stopRequested) {
+                        delay(EC_SOCKET_RETRY_DELAY_MS)
+                    }
+                } catch (ex: Exception) {
+                    if (!stopRequested) {
+                        Logx.e("EC heartbeat stopped", ex)
+                    }
+                    break
+                }
+            }
+        } finally {
+            runCatching { sendSocket?.close() }
+            Logx.i("EC heartbeat socket closed")
+        }
+    }
+
+    private fun createEcSocket(): DatagramSocket? {
+        return try {
+            DatagramSocket().apply {
+                boundWifi?.let { network ->
+                    runCatching { network.bindSocket(this) }.onFailure {
+                        Logx.w("Failed to bind EC socket to Wi-Fi network", it)
+                    }
+                }
             }
         } catch (ex: Exception) {
             if (!stopRequested) {
-                Logx.e("EC heartbeat stopped", ex)
+                Logx.w("Unable to open EC heartbeat socket", ex)
             }
-        } finally {
-            sendSocket.close()
-            Logx.i("EC heartbeat socket closed")
+            null
         }
     }
 
@@ -569,5 +610,6 @@ class EmotiBitClient(
         private const val MAX_PORT_ATTEMPTS = 10
         private const val MAX_UDP_PACKET = 64 * 1024
         private const val NETWORK_BIND_TIMEOUT_MS = 4_000L
+        private const val EC_SOCKET_RETRY_DELAY_MS = 500L
     }
 }

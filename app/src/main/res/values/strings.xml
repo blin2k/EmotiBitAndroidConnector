@@ -1,3 +1,6 @@
 <resources>
     <string name="app_name">EmotiBitConnector</string>
+    <string name="session_notification_content">Streaming %1$s (DP %2$d / CP %3$d)</string>
+    <string name="session_notification_default">EmotiBit session active</string>
+    <string name="session_notification_channel_description">Keeps EmotiBit streaming active in the background</string>
 </resources>
