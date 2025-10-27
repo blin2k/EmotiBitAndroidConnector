@@ -393,7 +393,7 @@ class EmotiBitViewModel(
     }
 
     private fun defaultCsvStem(): String =
-        DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss", Locale.US)
+        DateTimeFormatter.ofPattern("yyyyMMdd", Locale.US)
             .withZone(ZoneOffset.UTC)
             .format(Instant.now())
             .let { "EmotiBit-$it" }
