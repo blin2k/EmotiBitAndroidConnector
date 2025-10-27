@@ -1,12 +1,17 @@
 package com.example.emotibitconnector
 
 import android.app.Application
+import android.content.ContentResolver
+import android.content.ContentValues
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.emotibitconnector.Logx
@@ -14,6 +19,7 @@ import com.example.emotibitconnector.network.EmotiBitClient
 import com.example.emotibitconnector.network.EmotiBitProto
 import com.example.emotibitconnector.network.SessionConfig
 import com.example.emotibitconnector.CsvRecorder
+import java.io.File
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.NetworkInterface
@@ -39,6 +45,7 @@ class EmotiBitViewModel(
     private val client = EmotiBitClient(application, viewModelScope)
     private val recorder = CsvRecorder(application, viewModelScope)
     private val logCounter = AtomicLong(0)
+    private val recordingsDir = File(application.filesDir, "EmotiBit")
     private val connectivityManager =
         application.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     private val wifiRequest = NetworkRequest.Builder()
@@ -67,6 +74,7 @@ class EmotiBitViewModel(
         }
         refreshLocalNetworkInfo()
         observeRecorder()
+        refreshRecordings()
         runCatching { connectivityManager.registerNetworkCallback(wifiRequest, wifiCallback) }
             .onFailure { Logx.e("Failed to register Wi-Fi callback", it) }
     }
@@ -200,6 +208,7 @@ class EmotiBitViewModel(
                             recordResolvedName = ensureCsvExtension(stem)
                         )
                     }
+                    refreshRecordings()
                     appendLog("Recording started")
                 }
                 .onFailure { throwable ->
@@ -213,8 +222,155 @@ class EmotiBitViewModel(
         if (!recorder.isRecording.value) return
         viewModelScope.launch(Dispatchers.IO) {
             recorder.stop()
+            refreshRecordings()
         }
         appendLog("Recording stopped")
+    }
+
+    fun exportRecording(fileName: String, destination: RecordExportTarget) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            setError("Export requires Android 10 or higher")
+            return
+        }
+        val file = findRecordingFile(fileName)
+        if (file == null) {
+            setError("Recording not found: $fileName")
+            return
+        }
+        viewModelScope.launch {
+            beginRecordFileOperation(fileName)
+            val result = withContext(Dispatchers.IO) {
+                runCatching { performExport(file, destination) }
+            }
+            endRecordFileOperation()
+            result.onSuccess {
+                val message = "Exported ${file.name} to ${destination.label}"
+                _uiState.update {
+                    it.copy(
+                        recordFileStatusMessage = message,
+                        recordFileErrorMessage = null
+                    )
+                }
+                appendLog(message)
+            }.onFailure { throwable ->
+                val msg = throwable.message ?: throwable.toString()
+                _uiState.update {
+                    it.copy(
+                        recordFileStatusMessage = null,
+                        recordFileErrorMessage = msg
+                    )
+                }
+                Logx.e("Failed to export recordings", throwable)
+            }
+            refreshRecordings()
+        }
+    }
+
+    fun deleteRecording(fileName: String) {
+        val file = findRecordingFile(fileName)
+        if (file == null) {
+            setError("Recording not found: $fileName")
+            return
+        }
+        val activeTarget = _uiState.value.recordTarget
+        if (recorder.isRecording.value && activeTarget == file.absolutePath) {
+            setError("Stop recording before deleting the active file")
+            return
+        }
+        viewModelScope.launch {
+            beginRecordFileOperation(fileName)
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    if (!file.delete()) {
+                        throw IllegalStateException("Unable to delete ${file.name}")
+                    }
+                }
+            }
+            endRecordFileOperation()
+            result.onSuccess {
+                val message = "Deleted ${file.name} from private storage"
+                _uiState.update {
+                    it.copy(
+                        recordFileStatusMessage = message,
+                        recordFileErrorMessage = null
+                    )
+                }
+                appendLog(message)
+            }.onFailure { throwable ->
+                val msg = throwable.message ?: throwable.toString()
+                _uiState.update {
+                    it.copy(
+                        recordFileStatusMessage = null,
+                        recordFileErrorMessage = msg
+                    )
+                }
+                Logx.e("Failed to delete recording", throwable)
+            }
+            refreshRecordings()
+        }
+    }
+
+    fun clearRecordFileStatus() {
+        _uiState.update { it.copy(recordFileStatusMessage = null, recordFileErrorMessage = null) }
+    }
+
+    fun refreshRecordingList() {
+        refreshRecordings()
+    }
+
+    private fun refreshRecordings() {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (!recordingsDir.exists()) {
+                recordingsDir.mkdirs()
+            }
+            val files = listRecordingFiles()
+            _uiState.update { state ->
+                state.copy(recordings = files)
+            }
+        }
+    }
+
+    private fun listRecordingFiles(): List<RecordFileInfo> {
+        if (!recordingsDir.exists()) return emptyList()
+        return recordingsDir
+            .listFiles()
+            ?.filter { it.isFile && it.extension.equals("csv", ignoreCase = true) }
+            ?.sortedByDescending { it.lastModified() }
+            ?.map { file ->
+                RecordFileInfo(
+                    name = file.name,
+                    absolutePath = file.absolutePath,
+                    sizeBytes = file.length(),
+                    lastModifiedMs = file.lastModified()
+                )
+            }
+            .orEmpty()
+    }
+
+    private fun findRecordingFile(fileName: String): File? {
+        if (!recordingsDir.exists()) return null
+        val file = File(recordingsDir, fileName)
+        return file.takeIf { it.exists() && it.isFile }
+    }
+
+    private fun beginRecordFileOperation(fileName: String) {
+        _uiState.update {
+            it.copy(
+                isRecordFileOperationRunning = true,
+                recordFileInProgress = fileName,
+                recordFileStatusMessage = null,
+                recordFileErrorMessage = null
+            )
+        }
+    }
+
+    private fun endRecordFileOperation() {
+        _uiState.update {
+            it.copy(
+                isRecordFileOperationRunning = false,
+                recordFileInProgress = null
+            )
+        }
     }
 
     fun sendPn() {
@@ -319,6 +475,41 @@ class EmotiBitViewModel(
         }
     }
 
+    private fun performExport(file: File, destination: RecordExportTarget) {
+        val resolver = getApplication<Application>().contentResolver
+        val uri = insertMediaEntry(resolver, file.name, destination)
+        resolver.openOutputStream(uri)?.use { output ->
+            file.inputStream().use { input ->
+                input.copyTo(output)
+            }
+        } ?: throw IllegalStateException("Unable to open export destination for ${file.name}")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val finalizeValues = ContentValues().apply {
+                put(MediaStore.MediaColumns.IS_PENDING, 0)
+            }
+            resolver.update(uri, finalizeValues, null, null)
+        }
+    }
+
+    private fun insertMediaEntry(
+        resolver: ContentResolver,
+        displayName: String,
+        destination: RecordExportTarget
+    ): Uri {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            throw IllegalStateException("MediaStore export requires Android 10+")
+        }
+        val subDir = "${destination.relativePath}/EmotiBit"
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+            put(MediaStore.MediaColumns.MIME_TYPE, "text/csv")
+            put(MediaStore.MediaColumns.RELATIVE_PATH, subDir)
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+        return resolver.insert(destination.collectionUri, values)
+            ?: throw IllegalStateException("Unable to create export entry for $displayName")
+    }
+
     private fun refreshLocalNetworkInfo() {
         val info = client.getWifiNetInfo()
         if (info != null) {
@@ -421,11 +612,18 @@ data class UiDiscovered(
     val deviceId: String?
 )
 
+data class RecordFileInfo(
+    val name: String,
+    val absolutePath: String,
+    val sizeBytes: Long,
+    val lastModifiedMs: Long
+)
+
 data class EmotiBitUiState(
     val deviceIpText: String = "",
     val dpText: String = EmotiBitProto.DEFAULT_DATA_PORT.toString(),
     val cpText: String = EmotiBitProto.DEFAULT_CTRL_BACK_PORT.toString(),
-    val ecIntervalText: String = "1000",
+    val ecIntervalText: String = "5000",
     val localWifiIp: String? = null,
     val broadcastIp: String? = null,
     val localWifiPrefix: Int? = null,
@@ -443,5 +641,27 @@ data class EmotiBitUiState(
     val isRecordingCsv: Boolean = false,
     val recordRows: Long = 0,
     val recordTarget: String? = null,
-    val recordError: String? = null
+    val recordError: String? = null,
+    val isRecordFileOperationRunning: Boolean = false,
+    val recordFileStatusMessage: String? = null,
+    val recordFileErrorMessage: String? = null,
+    val recordFileInProgress: String? = null,
+    val recordings: List<RecordFileInfo> = emptyList()
 )
+
+enum class RecordExportTarget(
+    val label: String,
+    val relativePath: String,
+    val collectionUri: Uri
+) {
+    Downloads(
+        label = "Downloads",
+        relativePath = Environment.DIRECTORY_DOWNLOADS,
+        collectionUri = MediaStore.Downloads.EXTERNAL_CONTENT_URI
+    ),
+    Documents(
+        label = "Documents",
+        relativePath = Environment.DIRECTORY_DOCUMENTS,
+        collectionUri = MediaStore.Files.getContentUri("external")
+    )
+}

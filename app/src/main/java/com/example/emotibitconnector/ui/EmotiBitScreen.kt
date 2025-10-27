@@ -1,6 +1,7 @@
 package com.example.emotibitconnector.ui
 
 import android.net.Uri
+import android.text.format.Formatter
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -16,6 +17,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
@@ -33,6 +35,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -43,6 +46,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.emotibitconnector.EmotiBitUiState
 import com.example.emotibitconnector.EmotiBitViewModel
 import com.example.emotibitconnector.Logx
+import com.example.emotibitconnector.RecordExportTarget
+import com.example.emotibitconnector.RecordFileInfo
 import com.example.emotibitconnector.UiDiscovered
 import com.example.emotibitconnector.UiLogEntry
 import com.example.emotibitconnector.network.EmotiBitProto
@@ -69,6 +74,10 @@ fun EmotiBitConnectorApp() {
         onStartRecording = viewModel::startRecording,
         onStopRecording = viewModel::stopRecording,
         onSaveAs = viewModel::setRecordUri,
+        onExportRecording = viewModel::exportRecording,
+        onDeleteRecording = viewModel::deleteRecording,
+        onRefreshRecordings = viewModel::refreshRecordingList,
+        onDismissRecordFileStatus = viewModel::clearRecordFileStatus,
         onSendPn = viewModel::sendPn,
         onSendPo = viewModel::sendPo,
         onSendHe = viewModel::sendHe,
@@ -92,6 +101,10 @@ fun EmotiBitScreen(
     onStartRecording: () -> Unit,
     onStopRecording: () -> Unit,
     onSaveAs: (Uri?) -> Unit,
+    onExportRecording: (String, RecordExportTarget) -> Unit,
+    onDeleteRecording: (String) -> Unit,
+    onRefreshRecordings: () -> Unit,
+    onDismissRecordFileStatus: () -> Unit,
     onSendPn: () -> Unit,
     onSendPo: () -> Unit,
     onSendHe: () -> Unit,
@@ -297,6 +310,34 @@ fun EmotiBitScreen(
                     Text("Save As…")
                 }
             }
+            SavedRecordingsSection(
+                recordings = state.recordings,
+                isBusy = state.isRecordFileOperationRunning,
+                inProgressFile = state.recordFileInProgress,
+                onExport = onExportRecording,
+                onDelete = onDeleteRecording,
+                onRefresh = onRefreshRecordings
+            )
+            state.recordFileStatusMessage?.let { status ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = status,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.tertiary,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = onDismissRecordFileStatus) {
+                        Text("Dismiss")
+                    }
+                }
+            }
+            state.recordFileErrorMessage?.let { error ->
+                ErrorBanner(message = error, onDismiss = onDismissRecordFileStatus)
+            }
             RecordingStatus(state)
             state.recordError?.let { error ->
                 Text(
@@ -364,6 +405,122 @@ private fun RecordingStatus(state: EmotiBitUiState) {
                 text = "Target: $target",
                 style = MaterialTheme.typography.bodySmall
             )
+        }
+    }
+}
+
+@Composable
+private fun SavedRecordingsSection(
+    recordings: List<RecordFileInfo>,
+    isBusy: Boolean,
+    inProgressFile: String?,
+    onExport: (String, RecordExportTarget) -> Unit,
+    onDelete: (String) -> Unit,
+    onRefresh: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Saved recordings (private storage)",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+            TextButton(onClick = onRefresh) {
+                Text("Refresh")
+            }
+        }
+        if (recordings.isEmpty()) {
+            Text(
+                text = "No saved recordings yet. Start recording to create a CSV.",
+                style = MaterialTheme.typography.bodySmall
+            )
+        } else {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                recordings.forEachIndexed { index, file ->
+                    RecordingFileRow(
+                        info = file,
+                        isBusy = isBusy && inProgressFile == file.name,
+                        buttonsEnabled = !isBusy,
+                        onExport = onExport,
+                        onDelete = onDelete
+                    )
+                    if (index != recordings.lastIndex) {
+                        Divider()
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecordingFileRow(
+    info: RecordFileInfo,
+    isBusy: Boolean,
+    buttonsEnabled: Boolean,
+    onExport: (String, RecordExportTarget) -> Unit,
+    onDelete: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val sizeText = remember(info.sizeBytes) { Formatter.formatShortFileSize(context, info.sizeBytes) }
+    val dateFormatter = remember { SimpleDateFormat("MMM d, HH:mm", Locale.US) }
+    val dateText = remember(info.lastModifiedMs) { dateFormatter.format(Date(info.lastModifiedMs)) }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                text = info.name,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = "$sizeText • $dateText",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (isBusy) {
+                Text(
+                    text = "Working…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+        Column(
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            OutlinedButton(
+                onClick = { onExport(info.name, RecordExportTarget.Downloads) },
+                enabled = buttonsEnabled && !isBusy
+            ) {
+                Text("Downloads")
+            }
+            OutlinedButton(
+                onClick = { onExport(info.name, RecordExportTarget.Documents) },
+                enabled = buttonsEnabled && !isBusy
+            ) {
+                Text("Documents")
+            }
+            TextButton(
+                onClick = { onDelete(info.name) },
+                enabled = buttonsEnabled && !isBusy,
+                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+            ) {
+                Text("Delete")
+            }
         }
     }
 }
@@ -473,7 +630,23 @@ private fun EmotiBitScreenPreview() {
                 recordResolvedName = "EmotiBit-20250101-000000.csv",
                 isRecordingCsv = true,
                 recordRows = 1200,
-                recordTarget = ".../EmotiBit/EmotiBit-20250101-000000.csv"
+                recordTarget = ".../files/EmotiBit/EmotiBit-20250101-000000.csv",
+                isRecordFileOperationRunning = false,
+                recordFileStatusMessage = "Exported EmotiBit-20250101-000000.csv to Downloads",
+                recordings = listOf(
+                    RecordFileInfo(
+                        name = "EmotiBit-20250101-000000.csv",
+                        absolutePath = "/data/user/0/com.example/emotibit/EmotiBit-20250101-000000.csv",
+                        sizeBytes = 120_000,
+                        lastModifiedMs = System.currentTimeMillis()
+                    ),
+                    RecordFileInfo(
+                        name = "EmotiBit-20250102-010101.csv",
+                        absolutePath = "/data/user/0/com.example/emotibit/EmotiBit-20250102-010101.csv",
+                        sizeBytes = 42_000,
+                        lastModifiedMs = System.currentTimeMillis() - 86_400_000
+                    )
+                )
             ),
             onDeviceIpChange = {},
             onDpChange = {},
@@ -487,6 +660,10 @@ private fun EmotiBitScreenPreview() {
             onStartRecording = {},
             onStopRecording = {},
             onSaveAs = {},
+            onExportRecording = { _, _ -> },
+            onDeleteRecording = {},
+            onRefreshRecordings = {},
+            onDismissRecordFileStatus = {},
             onSendPn = {},
             onSendPo = {},
             onSendHe = {},

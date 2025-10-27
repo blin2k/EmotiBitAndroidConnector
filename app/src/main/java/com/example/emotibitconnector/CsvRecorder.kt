@@ -3,10 +3,10 @@ package com.example.emotibitconnector
 import android.app.Application
 import android.content.ContentResolver
 import android.net.Uri
-import android.os.Environment
 import com.example.emotibitconnector.Logx
 import java.io.BufferedWriter
 import java.io.File
+import java.io.FileOutputStream
 import java.io.OutputStream
 import java.io.OutputStreamWriter
 import java.nio.charset.StandardCharsets
@@ -19,10 +19,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ClosedReceiveChannelException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -40,6 +41,13 @@ class CsvRecorder(
         val useSafUri: Uri? = null
     )
 
+    private data class OutputTarget(
+        val stream: OutputStream,
+        val display: String,
+        val headerAlreadyPresent: Boolean,
+        val headerDelayMs: Long
+    )
+
     private data class CsvRow(
         val timestampMs: Long,
         val remoteIp: String,
@@ -53,6 +61,7 @@ class CsvRecorder(
     private var outputStream: OutputStream? = null
     private var writer: BufferedWriter? = null
     private var headerWritten = false
+    private var headerDelayMs = 0L
 
     private val _isRecording = MutableStateFlow(false)
     val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
@@ -70,16 +79,18 @@ class CsvRecorder(
         mutex.withLock {
             stopLocked()
 
-            val (stream, display) = withContext(Dispatchers.IO) {
+            val target = withContext(Dispatchers.IO) {
                 resolveOutput(config)
             }
 
+            val stream = target.stream
             outputStream = stream
             writer = BufferedWriter(OutputStreamWriter(stream, StandardCharsets.UTF_8))
-            headerWritten = false
+            headerWritten = target.headerAlreadyPresent
+            headerDelayMs = target.headerDelayMs
             channel = Channel(capacity = CHANNEL_CAPACITY, onBufferOverflow = BufferOverflow.DROP_OLDEST)
             _rowsWritten.value = 0L
-            _targetDisplay.value = display
+            _targetDisplay.value = target.display
             _lastError.value = null
 
             val localChannel = channel!!
@@ -87,7 +98,7 @@ class CsvRecorder(
                 runWriterLoop(localChannel)
             }
             _isRecording.value = true
-            Logx.i("CSV recording started -> $display")
+            Logx.i("CSV recording started -> ${target.display}")
         }
     }
 
@@ -117,6 +128,7 @@ class CsvRecorder(
         writer = null
         outputStream = null
         headerWritten = false
+        headerDelayMs = 0L
         if (hadResources) {
             Logx.i("CSV recording stopped")
         }
@@ -127,6 +139,11 @@ class CsvRecorder(
         val buffer = ArrayList<CsvRow>(BATCH_FLUSH_THRESHOLD)
         var lastFlushAt = System.currentTimeMillis()
         try {
+            val delayBeforeHeader = headerDelayMs
+            if (!headerWritten && delayBeforeHeader > 0L) {
+                delay(delayBeforeHeader)
+                headerDelayMs = 0L
+            }
             ensureHeader(activeWriter)
             while (scope.isActive) {
                 val first = try {
@@ -201,22 +218,25 @@ class CsvRecorder(
         rows.clear()
     }
 
-    private fun resolveOutput(config: Config): Pair<OutputStream, String> {
+    private fun resolveOutput(config: Config): OutputTarget {
         config.useSafUri?.let { uri ->
             val resolver: ContentResolver = app.contentResolver
             val stream = resolver.openOutputStream(uri, "wa")
                 ?: throw IllegalStateException("Unable to open SAF Uri: $uri")
-            return stream to uri.toString()
+            return OutputTarget(stream, uri.toString(), headerAlreadyPresent = false, headerDelayMs = 0L)
         }
 
         val stem = config.fileNameStem?.takeIf { it.isNotBlank() } ?: defaultStem()
-        val dir = File(app.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "EmotiBit")
+        val dir = File(app.filesDir, "EmotiBit")
         if (!dir.exists()) {
             dir.mkdirs()
         }
         val file = File(dir, ensureCsvExtension(stem))
-        val stream = file.outputStream()
-        return stream to file.absolutePath
+        val existedBefore = file.exists()
+        val headerAlreadyPresent = existedBefore && file.length() > 0L
+        val stream = FileOutputStream(file, /* append = */ true)
+        val headerDelay = if (existedBefore) 0L else NEW_FILE_HEADER_DELAY_MS
+        return OutputTarget(stream, file.absolutePath, headerAlreadyPresent, headerDelay)
     }
 
     private fun defaultStem(): String =
@@ -237,6 +257,7 @@ class CsvRecorder(
         private const val BATCH_FLUSH_THRESHOLD = 200
         private const val FLUSH_INTERVAL_MS = 250L
         private const val CSV_HEADER = "timestamp_iso8601,timestamp_epoch_ms,remote_ip,remote_port,payload"
+        private const val NEW_FILE_HEADER_DELAY_MS = 1_000L
     }
 }
 
