@@ -71,7 +71,7 @@ fun EmotiBitConnectorApp() {
         onDpChange = viewModel::updateDp,
         onCpChange = viewModel::updateCp,
         onEcIntervalChange = viewModel::updateEcInterval,
-        onRecordFileStemChange = viewModel::updateRecordFileStem,
+        onUserIdChange = viewModel::updateUserId,
         onStartClick = viewModel::startSession,
         onStopClick = viewModel::stopSession,
         onScanClick = viewModel::scanDevices,
@@ -101,7 +101,7 @@ fun EmotiBitScreen(
     onDpChange: (String) -> Unit,
     onCpChange: (String) -> Unit,
     onEcIntervalChange: (String) -> Unit,
-    onRecordFileStemChange: (String) -> Unit,
+    onUserIdChange: (String) -> Unit,
     onStartClick: () -> Unit,
     onStopClick: () -> Unit,
     onScanClick: () -> Unit,
@@ -342,12 +342,27 @@ fun EmotiBitScreen(
                 fontWeight = FontWeight.SemiBold
             )
             OutlinedTextField(
-                value = state.recordFileStem,
-                onValueChange = onRecordFileStemChange,
+                value = state.userIdText,
+                onValueChange = onUserIdChange,
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
-                label = { Text("Filename (stem)") },
-                placeholder = { Text("EmotiBit-<timestamp>") }
+                label = { Text("User ID") },
+                placeholder = { Text("e.g. PT01") }
+            )
+            OutlinedTextField(
+                value = state.recordResolvedName,
+                onValueChange = {},
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Resolved filename") },
+                readOnly = true,
+                enabled = false,
+                colors = TextFieldDefaults.colors(
+                    disabledTextColor = MaterialTheme.colorScheme.onSurface,
+                    disabledLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    disabledLeadingIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    disabledTrailingIconColor = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             )
             val recordingLabel = when {
                 state.isRecordingCsv && state.isRecordingStopInProgress -> "Stopping recording…"
@@ -703,6 +718,7 @@ private fun EmotiBitScreenPreview() {
                 dpText = "3132",
                 cpText = "3133",
                 ecIntervalText = "1000",
+                userIdText = "PT01",
                 localWifiIp = "192.168.50.5",
                 broadcastIp = "192.168.50.255",
                 localWifiPrefix = 24,
@@ -716,8 +732,8 @@ private fun EmotiBitScreenPreview() {
                     UiLogEntry(2, "UDP packet received", System.currentTimeMillis())
                 ),
                 discoveredDevices = listOf(UiDiscovered("192.168.50.36", "MD-V5-0000241")),
-                recordFileStem = "EmotiBit-20250101-000000",
-                recordResolvedName = "EmotiBit-20250101-000000.csv",
+                recordFileStem = "PT01-20250101",
+                recordResolvedName = "PT01-20250101.csv",
                 isRecordingCsv = true,
                 recordRows = 1200,
                 recordTarget = ".../files/EmotiBit/EmotiBit-20250101-000000.csv",
@@ -742,7 +758,7 @@ private fun EmotiBitScreenPreview() {
             onDpChange = {},
             onCpChange = {},
             onEcIntervalChange = {},
-            onRecordFileStemChange = {},
+            onUserIdChange = {},
             onStartClick = {},
             onStopClick = {},
             onScanClick = {},

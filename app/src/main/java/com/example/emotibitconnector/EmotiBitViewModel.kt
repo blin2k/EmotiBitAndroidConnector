@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.ContentResolver
 import android.content.ContentValues
 import android.content.Context
+import android.content.SharedPreferences
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -40,6 +41,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlin.text.Charsets
+import kotlin.text.Regex
 
 class EmotiBitViewModel(
     application: Application
@@ -52,6 +54,7 @@ class EmotiBitViewModel(
     private val wifiLockManager = WifiLockManager(application)
     private val logCounter = AtomicLong(0)
     private val recordingsDir = File(application.filesDir, "EmotiBit")
+    private val preferences: SharedPreferences = application.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val connectivityManager =
         application.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     private val wifiRequest = NetworkRequest.Builder()
@@ -71,11 +74,13 @@ class EmotiBitViewModel(
     val uiState: StateFlow<EmotiBitUiState> = _uiState.asStateFlow()
 
     init {
-        val defaultStem = defaultCsvStem()
+        val savedUserId = loadSavedUserId()
+        val stem = buildCsvStem(savedUserId.takeIf { it.isNotBlank() })
         _uiState.update {
             it.copy(
-                recordFileStem = defaultStem,
-                recordResolvedName = ensureCsvExtension(defaultStem)
+                userIdText = savedUserId,
+                recordFileStem = stem,
+                recordResolvedName = ensureCsvExtension(stem)
             )
         }
         refreshLocalNetworkInfo()
@@ -101,11 +106,13 @@ class EmotiBitViewModel(
         _uiState.update { it.copy(ecIntervalText = value.filter(Char::isDigit)) }
     }
 
-    fun updateRecordFileStem(value: String) {
-        val trimmed = value.trim()
-        val stem = if (trimmed.isNotEmpty()) trimmed else defaultCsvStem()
+    fun updateUserId(value: String) {
+        val sanitized = sanitizeUserId(value)
+        persistUserId(sanitized)
+        val stem = buildCsvStem(sanitized.takeIf { it.isNotBlank() })
         _uiState.update {
             it.copy(
+                userIdText = sanitized,
                 recordFileStem = stem,
                 recordResolvedName = ensureCsvExtension(stem)
             )
@@ -241,7 +248,9 @@ class EmotiBitViewModel(
     fun startRecording() {
         if (recorder.isRecording.value) return
         val state = _uiState.value
-        val stem = state.recordFileStem.ifBlank { defaultCsvStem() }
+        val sanitizedUserId = sanitizeUserId(state.userIdText)
+        persistUserId(sanitizedUserId)
+        val stem = buildCsvStem(sanitizedUserId.takeIf { it.isNotBlank() })
         val config = CsvRecorder.Config(
             fileNameStem = stem,
             useSafUri = state.recordUri
@@ -253,6 +262,7 @@ class EmotiBitViewModel(
                         it.copy(
                             recordFileStem = stem,
                             recordResolvedName = ensureCsvExtension(stem),
+                            userIdText = sanitizedUserId,
                             isRecordingStopInProgress = false,
                             showRecordingBusyDialog = false
                         )
@@ -737,11 +747,40 @@ class EmotiBitViewModel(
         super.onCleared()
     }
 
-    private fun defaultCsvStem(): String =
+    private fun currentDateStamp(): String =
         DateTimeFormatter.ofPattern("yyyyMMdd", Locale.US)
             .withZone(ZoneOffset.UTC)
             .format(Instant.now())
-            .let { "EmotiBit-$it" }
+
+    private fun buildCsvStem(userId: String?): String {
+        val prefix = userId?.takeIf { it.isNotBlank() }?.let(::sanitizeUserId)?.takeIf { it.isNotBlank() }
+            ?: DEFAULT_STEM_PREFIX
+        return "$prefix-${currentDateStamp()}"
+    }
+
+    private fun defaultCsvStem(): String = buildCsvStem(null)
+
+    private fun sanitizeUserId(raw: String): String {
+        val filtered = raw.trim().mapNotNull { ch ->
+            when {
+                ch.isLetterOrDigit() -> ch
+                ch == '-' || ch == '_' -> ch
+                ch == ' ' -> '-' // convert spaces to dash
+                else -> null
+            }
+        }
+        return filtered.joinToString("")
+            .replace(Regex("-+"), "-")
+            .trim('-','_')
+    }
+
+    private fun loadSavedUserId(): String = sanitizeUserId(preferences.getString(KEY_USER_ID, "") ?: "")
+
+    private fun persistUserId(value: String) {
+        preferences.edit().apply {
+            if (value.isBlank()) remove(KEY_USER_ID) else putString(KEY_USER_ID, value)
+        }.apply()
+    }
 
     private fun ensureCsvExtension(stem: String): String {
         return if (stem.lowercase(Locale.US).endsWith(".csv")) stem else "$stem.csv"
@@ -752,6 +791,9 @@ class EmotiBitViewModel(
     companion object {
         private const val MAX_LOG_ITEMS = 200
         private const val MAX_PREVIEW_CHARS = 80
+        private const val DEFAULT_STEM_PREFIX = "EmotiBit"
+        private const val PREFS_NAME = "emotibit_connector_prefs"
+        private const val KEY_USER_ID = "user_id"
     }
 }
 
@@ -778,6 +820,7 @@ data class RecordFileInfo(
         val dpText: String = EmotiBitProto.DEFAULT_DATA_PORT.toString(),
         val cpText: String = EmotiBitProto.DEFAULT_CTRL_BACK_PORT.toString(),
         val ecIntervalText: String = "1000",
+        val userIdText: String = "",
         val showOptionalUi: Boolean = false,
         val isStopSessionInProgress: Boolean = false,
         val showStopSessionBusyDialog: Boolean = false,
