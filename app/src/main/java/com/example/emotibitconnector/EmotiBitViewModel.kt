@@ -720,7 +720,7 @@ data class RecordFileInfo(
         val dpText: String = EmotiBitProto.DEFAULT_DATA_PORT.toString(),
         val cpText: String = EmotiBitProto.DEFAULT_CTRL_BACK_PORT.toString(),
         val ecIntervalText: String = "1000",
-        val showOptionalUi: Boolean = true,
+        val showOptionalUi: Boolean = false,
         val localWifiIp: String? = null,
         val broadcastIp: String? = null,
         val localWifiPrefix: Int? = null,
