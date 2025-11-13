@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Divider
@@ -86,7 +87,9 @@ fun EmotiBitConnectorApp() {
         onSendPo = viewModel::sendPo,
         onSendHe = viewModel::sendHe,
         onDismissError = viewModel::clearError,
-        onToggleOptionalUi = viewModel::toggleOptionalUi
+        onToggleOptionalUi = viewModel::toggleOptionalUi,
+        onDismissRecordingBusyPrompt = viewModel::dismissRecordingBusyPrompt,
+        onDismissStopSessionBusyPrompt = viewModel::dismissStopSessionBusyPrompt
     )
 }
 
@@ -114,7 +117,9 @@ fun EmotiBitScreen(
     onSendPo: () -> Unit,
     onSendHe: () -> Unit,
     onDismissError: () -> Unit,
-    onToggleOptionalUi: () -> Unit
+    onToggleOptionalUi: () -> Unit,
+    onDismissRecordingBusyPrompt: () -> Unit,
+    onDismissStopSessionBusyPrompt: () -> Unit
 ) {
     Scaffold(
         topBar = {
@@ -285,22 +290,22 @@ fun EmotiBitScreen(
                     fontWeight = FontWeight.SemiBold
                 )
             }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            val startStopLabel = when {
+                state.isStreaming && state.isStopSessionInProgress -> "Stopping…"
+                state.isStreaming -> "Stop listening"
+                else -> "Start listening & connect"
+            }
+            val startStopEnabled = when {
+                state.isStreaming -> !state.isStopSessionInProgress
+                else -> state.deviceIpText.isNotBlank()
+            }
+            val startStopAction = if (state.isStreaming) onStopClick else handleStartClick
+            Button(
+                onClick = startStopAction,
+                enabled = startStopEnabled,
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Button(
-                    onClick = handleStartClick,
-                    enabled = state.deviceIpText.isNotBlank()
-                ) {
-                    Text("Start listening & connect")
-                }
-                OutlinedButton(
-                    onClick = onStopClick,
-                    enabled = state.isStreaming
-                ) {
-                    Text("Stop")
-                }
+                Text(startStopLabel)
             }
             if (state.showOptionalUi) {
                 Row(
@@ -344,21 +349,26 @@ fun EmotiBitScreen(
                 label = { Text("Filename (stem)") },
                 placeholder = { Text("EmotiBit-<timestamp>") }
             )
+            val recordingLabel = when {
+                state.isRecordingCsv && state.isRecordingStopInProgress -> "Stopping recording…"
+                state.isRecordingCsv -> "Stop Recording"
+                else -> "Start Recording"
+            }
+            val recordingEnabled = when {
+                state.isRecordingCsv -> !state.isRecordingStopInProgress
+                else -> true
+            }
+            val recordingAction = if (state.isRecordingCsv) onStopRecording else onStartRecording
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Button(
-                    onClick = onStartRecording,
-                    enabled = !state.isRecordingCsv
+                    onClick = recordingAction,
+                    enabled = recordingEnabled,
+                    modifier = Modifier.weight(1f)
                 ) {
-                    Text("Start Recording")
-                }
-                OutlinedButton(
-                    onClick = onStopRecording,
-                    enabled = state.isRecordingCsv
-                ) {
-                    Text("Stop Recording")
+                    Text(recordingLabel)
                 }
                 TextButton(onClick = { saveAsLauncher.launch(suggestedName) }) {
                     Text("Save As…")
@@ -398,6 +408,30 @@ fun EmotiBitScreen(
                     text = error,
                     color = MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.bodySmall
+                )
+            }
+            if (state.showRecordingBusyDialog) {
+                AlertDialog(
+                    onDismissRequest = onDismissRecordingBusyPrompt,
+                    confirmButton = {
+                        TextButton(onClick = onDismissRecordingBusyPrompt) {
+                            Text("OK")
+                        }
+                    },
+                    title = { Text("Finishing recording") },
+                    text = { Text("Stop Recording is still processing. Please wait…") }
+                )
+            }
+            if (state.showStopSessionBusyDialog) {
+                AlertDialog(
+                    onDismissRequest = onDismissStopSessionBusyPrompt,
+                    confirmButton = {
+                        TextButton(onClick = onDismissStopSessionBusyPrompt) {
+                            Text("OK")
+                        }
+                    },
+                    title = { Text("Stopping session") },
+                    text = { Text("Stop listening is already in progress. Please wait…") }
                 )
             }
             state.errorMessage?.let { message ->
@@ -724,7 +758,9 @@ private fun EmotiBitScreenPreview() {
             onSendPo = {},
             onSendHe = {},
             onDismissError = {},
-            onToggleOptionalUi = {}
+            onToggleOptionalUi = {},
+            onDismissRecordingBusyPrompt = {},
+            onDismissStopSessionBusyPrompt = {}
         )
     }
 }

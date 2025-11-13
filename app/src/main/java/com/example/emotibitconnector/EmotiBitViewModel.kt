@@ -183,7 +183,9 @@ class EmotiBitViewModel(
                         packetsRx = 0,
                         lastSender = null,
                         lastPayloadPreview = null,
-                        errorMessage = null
+                        errorMessage = null,
+                        isStopSessionInProgress = false,
+                        showStopSessionBusyDialog = false
                     )
                 }
                 appendLog("Session established dp=$dp cp=$cp")
@@ -194,24 +196,46 @@ class EmotiBitViewModel(
                 wifiLockManager.release()
                 sessionWakeManager.release()
                 SessionService.stop(appContext)
+                _uiState.update {
+                    it.copy(
+                        isStopSessionInProgress = false,
+                        showStopSessionBusyDialog = false,
+                        isStreaming = false
+                    )
+                }
             }
         }
     }
 
     fun stopSession() {
+        if (_uiState.value.isStopSessionInProgress) {
+            _uiState.update { it.copy(showStopSessionBusyDialog = true) }
+            return
+        }
+        _uiState.update { it.copy(isStopSessionInProgress = true, showStopSessionBusyDialog = false) }
         val appContext = getApplication<Application>()
         wifiLockManager.release()
         sessionWakeManager.release()
         SessionService.stop(appContext)
         client.stopSession()
         viewModelScope.launch(Dispatchers.IO) {
-            recorder.stop()
+            try {
+                recorder.stop()
+            } catch (throwable: Throwable) {
+                Logx.e("Failed to stop session recorder", throwable)
+                setError("Stop listening cleanup failed: ${throwable.message ?: throwable}")
+            } finally {
+                _uiState.update {
+                    it.copy(
+                        isStreaming = false,
+                        isStopSessionInProgress = false,
+                        showStopSessionBusyDialog = false
+                    )
+                }
+                appendLog("Session stopped")
+                refreshLocalNetworkInfo()
+            }
         }
-        appendLog("Session stopped")
-        _uiState.update {
-            it.copy(isStreaming = false)
-        }
-        refreshLocalNetworkInfo()
     }
 
     fun startRecording() {
@@ -228,7 +252,9 @@ class EmotiBitViewModel(
                     _uiState.update {
                         it.copy(
                             recordFileStem = stem,
-                            recordResolvedName = ensureCsvExtension(stem)
+                            recordResolvedName = ensureCsvExtension(stem),
+                            isRecordingStopInProgress = false,
+                            showRecordingBusyDialog = false
                         )
                     }
                     refreshRecordings()
@@ -243,11 +269,37 @@ class EmotiBitViewModel(
 
     fun stopRecording() {
         if (!recorder.isRecording.value) return
-        viewModelScope.launch(Dispatchers.IO) {
-            recorder.stop()
-            refreshRecordings()
+        val state = _uiState.value
+        if (state.isRecordingStopInProgress) {
+            _uiState.update { it.copy(showRecordingBusyDialog = true) }
+            return
         }
-        appendLog("Recording stopped")
+        _uiState.update { it.copy(isRecordingStopInProgress = true, showRecordingBusyDialog = false) }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                recorder.stop()
+                refreshRecordings()
+                appendLog("Recording stopped")
+            } catch (throwable: Throwable) {
+                Logx.e("Failed to stop recording", throwable)
+                setError("Stop recording failed: ${throwable.message ?: throwable}")
+            } finally {
+                _uiState.update { current ->
+                    current.copy(
+                        isRecordingStopInProgress = false,
+                        showRecordingBusyDialog = false
+                    )
+                }
+            }
+        }
+    }
+
+    fun dismissRecordingBusyPrompt() {
+        _uiState.update { it.copy(showRecordingBusyDialog = false) }
+    }
+
+    fun dismissStopSessionBusyPrompt() {
+        _uiState.update { it.copy(showStopSessionBusyDialog = false) }
     }
 
     fun exportRecording(fileName: String, destination: RecordExportTarget) {
@@ -645,7 +697,13 @@ class EmotiBitViewModel(
                 } else {
                     recordingWakeManager.release()
                 }
-                _uiState.update { it.copy(isRecordingCsv = recording) }
+                _uiState.update { current ->
+                    current.copy(
+                        isRecordingCsv = recording,
+                        isRecordingStopInProgress = if (recording) current.isRecordingStopInProgress else false,
+                        showRecordingBusyDialog = if (recording) current.showRecordingBusyDialog else false
+                    )
+                }
             }
         }
         viewModelScope.launch {
@@ -721,6 +779,8 @@ data class RecordFileInfo(
         val cpText: String = EmotiBitProto.DEFAULT_CTRL_BACK_PORT.toString(),
         val ecIntervalText: String = "1000",
         val showOptionalUi: Boolean = false,
+        val isStopSessionInProgress: Boolean = false,
+        val showStopSessionBusyDialog: Boolean = false,
         val localWifiIp: String? = null,
         val broadcastIp: String? = null,
         val localWifiPrefix: Int? = null,
@@ -734,17 +794,19 @@ data class RecordFileInfo(
     val discoveredDevices: List<UiDiscovered> = emptyList(),
     val recordFileStem: String = "",
     val recordResolvedName: String = "",
-    val recordUri: Uri? = null,
-    val isRecordingCsv: Boolean = false,
-    val recordRows: Long = 0,
-    val recordTarget: String? = null,
-    val recordError: String? = null,
-    val isRecordFileOperationRunning: Boolean = false,
-    val recordFileStatusMessage: String? = null,
-    val recordFileErrorMessage: String? = null,
-    val recordFileInProgress: String? = null,
-    val recordings: List<RecordFileInfo> = emptyList()
-)
+        val recordUri: Uri? = null,
+        val isRecordingCsv: Boolean = false,
+        val isRecordingStopInProgress: Boolean = false,
+        val recordRows: Long = 0,
+        val recordTarget: String? = null,
+        val recordError: String? = null,
+        val isRecordFileOperationRunning: Boolean = false,
+        val recordFileStatusMessage: String? = null,
+        val recordFileErrorMessage: String? = null,
+        val recordFileInProgress: String? = null,
+        val recordings: List<RecordFileInfo> = emptyList(),
+        val showRecordingBusyDialog: Boolean = false
+    )
 
 enum class RecordExportTarget(
     val label: String,
