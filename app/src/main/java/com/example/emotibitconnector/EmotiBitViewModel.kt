@@ -112,6 +112,10 @@ class EmotiBitViewModel(
         }
     }
 
+    fun toggleOptionalUi() {
+        _uiState.update { it.copy(showOptionalUi = !it.showOptionalUi) }
+    }
+
     fun setRecordUri(uri: Uri?) {
         val previous = _uiState.value.recordUri
         _uiState.update { it.copy(recordUri = uri, recordTarget = uri?.toString()) }
@@ -716,9 +720,10 @@ data class RecordFileInfo(
         val dpText: String = EmotiBitProto.DEFAULT_DATA_PORT.toString(),
         val cpText: String = EmotiBitProto.DEFAULT_CTRL_BACK_PORT.toString(),
         val ecIntervalText: String = "1000",
-    val localWifiIp: String? = null,
-    val broadcastIp: String? = null,
-    val localWifiPrefix: Int? = null,
+        val showOptionalUi: Boolean = true,
+        val localWifiIp: String? = null,
+        val broadcastIp: String? = null,
+        val localWifiPrefix: Int? = null,
     val isStreaming: Boolean = false,
     val isScanning: Boolean = false,
     val packetsRx: Long = 0,

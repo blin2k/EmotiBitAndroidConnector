@@ -85,7 +85,8 @@ fun EmotiBitConnectorApp() {
         onSendPn = viewModel::sendPn,
         onSendPo = viewModel::sendPo,
         onSendHe = viewModel::sendHe,
-        onDismissError = viewModel::clearError
+        onDismissError = viewModel::clearError,
+        onToggleOptionalUi = viewModel::toggleOptionalUi
     )
 }
 
@@ -112,7 +113,8 @@ fun EmotiBitScreen(
     onSendPn: () -> Unit,
     onSendPo: () -> Unit,
     onSendHe: () -> Unit,
-    onDismissError: () -> Unit
+    onDismissError: () -> Unit,
+    onToggleOptionalUi: () -> Unit
 ) {
     Scaffold(
         topBar = {
@@ -168,10 +170,20 @@ fun EmotiBitScreen(
                 .verticalScroll(scrollState),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text(
-                text = "Set the EmotiBit device IP (from AP client list) then press Start to open UDP/TCP session.",
-                style = MaterialTheme.typography.bodyMedium
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(onClick = onToggleOptionalUi) {
+                    Text(if (state.showOptionalUi) "Hide optional UI" else "Show optional UI")
+                }
+            }
+            if (state.showOptionalUi) {
+                Text(
+                    text = "Set the EmotiBit device IP (from AP client list) then press Start to open UDP/TCP session.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -233,44 +245,46 @@ fun EmotiBitScreen(
                     }
                 }
             }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
+            if (state.showOptionalUi) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    OutlinedTextField(
+                        value = state.dpText,
+                        onValueChange = onDpChange,
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        label = { Text("UDP DP") },
+                        placeholder = { Text(EmotiBitProto.DEFAULT_DATA_PORT.toString()) }
+                    )
+                    OutlinedTextField(
+                        value = state.cpText,
+                        onValueChange = onCpChange,
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        label = { Text("TCP CP") },
+                        placeholder = { Text((EmotiBitProto.DEFAULT_DATA_PORT + 1).toString()) }
+                    )
+                }
                 OutlinedTextField(
-                    value = state.dpText,
-                    onValueChange = onDpChange,
-                    modifier = Modifier.weight(1f),
+                    value = state.ecIntervalText,
+                    onValueChange = onEcIntervalChange,
+                    modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    label = { Text("UDP DP") },
-                    placeholder = { Text(EmotiBitProto.DEFAULT_DATA_PORT.toString()) }
+                    label = { Text("EC interval (ms)") },
+                    placeholder = { Text("1000") }
                 )
-                OutlinedTextField(
-                    value = state.cpText,
-                    onValueChange = onCpChange,
-                    modifier = Modifier.weight(1f),
-                    singleLine = true,
-                    label = { Text("TCP CP") },
-                    placeholder = { Text((EmotiBitProto.DEFAULT_DATA_PORT + 1).toString()) }
+                ReadOnlyInfoField("Local Wi-Fi IPv4", state.localWifiIp ?: "<unknown>")
+                ReadOnlyInfoField("Broadcast IPv4", state.broadcastIp ?: "<unknown>")
+                ReadOnlyInfoField("Subnet Prefix", state.localWifiPrefix?.let { "/$it" } ?: "<unknown>")
+                Divider()
+                Text(
+                    text = "Connection",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
                 )
             }
-            OutlinedTextField(
-                value = state.ecIntervalText,
-                onValueChange = onEcIntervalChange,
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                label = { Text("EC interval (ms)") },
-                placeholder = { Text("1000") }
-            )
-            ReadOnlyInfoField("Local Wi-Fi IPv4", state.localWifiIp ?: "<unknown>")
-            ReadOnlyInfoField("Broadcast IPv4", state.broadcastIp ?: "<unknown>")
-            ReadOnlyInfoField("Subnet Prefix", state.localWifiPrefix?.let { "/$it" } ?: "<unknown>")
-            Divider()
-            Text(
-                text = "Connection",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold
-            )
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -288,31 +302,35 @@ fun EmotiBitScreen(
                     Text("Stop")
                 }
             }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                OutlinedButton(onClick = onSendPn, enabled = state.isStreaming) {
-                    Text("Send PN")
-                }
-                OutlinedButton(onClick = onSendPo, enabled = state.isStreaming) {
-                    Text("Send PO")
-                }
-                OutlinedButton(onClick = onSendHe, enabled = state.deviceIpText.isNotBlank()) {
-                    Text("Send HE")
-                }
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                TextButton(onClick = {
-                    val intent = android.content.Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                        data = Uri.parse("package:${context.packageName}")
+            if (state.showOptionalUi) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    OutlinedButton(onClick = onSendPn, enabled = state.isStreaming) {
+                        Text("Send PN")
                     }
-                    runCatching { context.startActivity(intent) }
-                }) {
-                    Text("Battery optimization tips")
+                    OutlinedButton(onClick = onSendPo, enabled = state.isStreaming) {
+                        Text("Send PO")
+                    }
+                    OutlinedButton(onClick = onSendHe, enabled = state.deviceIpText.isNotBlank()) {
+                        Text("Send HE")
+                    }
                 }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    TextButton(onClick = {
+                        val intent = android.content.Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                            data = Uri.parse("package:${context.packageName}")
+                        }
+                        runCatching { context.startActivity(intent) }
+                    }) {
+                        Text("Battery optimization tips")
+                    }
+                }
+                Divider()
+            } else {
+                Divider()
             }
-            Divider()
             Text(
                 text = "Recording",
                 style = MaterialTheme.typography.titleMedium,
@@ -385,37 +403,39 @@ fun EmotiBitScreen(
             state.errorMessage?.let { message ->
                 ErrorBanner(message = message, onDismiss = onDismissError)
             }
-            Divider()
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Session log",
-                    style = MaterialTheme.typography.titleMedium
-                )
-                OutlinedButton(onClick = {
-                    clipboardManager.setText(AnnotatedString(diagnostics))
-                    Logx.i("Diagnostics copied to clipboard (logCount=${state.logEntries.size})")
-                }) {
-                    Text("Copy diagnostics")
+            if (state.showOptionalUi) {
+                Divider()
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Session log",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    OutlinedButton(onClick = {
+                        clipboardManager.setText(AnnotatedString(diagnostics))
+                        Logx.i("Diagnostics copied to clipboard (logCount=${state.logEntries.size})")
+                    }) {
+                        Text("Copy diagnostics")
+                    }
                 }
-            }
-            val logListState = rememberLazyListState()
-            LaunchedEffect(state.logEntries.size) {
-                if (state.logEntries.isNotEmpty()) {
-                    logListState.animateScrollToItem(state.logEntries.lastIndex)
+                val logListState = rememberLazyListState()
+                LaunchedEffect(state.logEntries.size) {
+                    if (state.logEntries.isNotEmpty()) {
+                        logListState.animateScrollToItem(state.logEntries.lastIndex)
+                    }
                 }
-            }
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 160.dp, max = 320.dp),
-                state = logListState
-            ) {
-                items(state.logEntries, key = { it.id }) { entry ->
-                    LogRow(entry)
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 160.dp, max = 320.dp),
+                    state = logListState
+                ) {
+                    items(state.logEntries, key = { it.id }) { entry ->
+                        LogRow(entry)
+                    }
                 }
             }
         }
@@ -703,7 +723,8 @@ private fun EmotiBitScreenPreview() {
             onSendPn = {},
             onSendPo = {},
             onSendHe = {},
-            onDismissError = {}
+            onDismissError = {},
+            onToggleOptionalUi = {}
         )
     }
 }
