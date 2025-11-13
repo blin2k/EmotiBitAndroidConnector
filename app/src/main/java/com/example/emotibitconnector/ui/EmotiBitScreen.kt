@@ -80,6 +80,7 @@ fun EmotiBitConnectorApp() {
         onStopRecording = viewModel::stopRecording,
         onSaveAs = viewModel::setRecordUri,
         onExportRecording = viewModel::exportRecording,
+        onUploadRecording = viewModel::uploadRecording,
         onDeleteRecording = viewModel::deleteRecording,
         onRefreshRecordings = viewModel::refreshRecordingList,
         onDismissRecordFileStatus = viewModel::clearRecordFileStatus,
@@ -110,6 +111,7 @@ fun EmotiBitScreen(
     onStopRecording: () -> Unit,
     onSaveAs: (Uri?) -> Unit,
     onExportRecording: (String, RecordExportTarget) -> Unit,
+    onUploadRecording: (String) -> Unit,
     onDeleteRecording: (String) -> Unit,
     onRefreshRecordings: () -> Unit,
     onDismissRecordFileStatus: () -> Unit,
@@ -394,6 +396,7 @@ fun EmotiBitScreen(
                 isBusy = state.isRecordFileOperationRunning,
                 inProgressFile = state.recordFileInProgress,
                 onExport = onExportRecording,
+                onUpload = onUploadRecording,
                 onDelete = onDeleteRecording,
                 onRefresh = onRefreshRecordings
             )
@@ -520,6 +523,7 @@ private fun SavedRecordingsSection(
     isBusy: Boolean,
     inProgressFile: String?,
     onExport: (String, RecordExportTarget) -> Unit,
+    onUpload: (String) -> Unit,
     onDelete: (String) -> Unit,
     onRefresh: () -> Unit
 ) {
@@ -556,6 +560,7 @@ private fun SavedRecordingsSection(
                         isBusy = isBusy && inProgressFile == file.name,
                         buttonsEnabled = !isBusy,
                         onExport = onExport,
+                        onUpload = onUpload,
                         onDelete = onDelete
                     )
                     if (index != recordings.lastIndex) {
@@ -573,6 +578,7 @@ private fun RecordingFileRow(
     isBusy: Boolean,
     buttonsEnabled: Boolean,
     onExport: (String, RecordExportTarget) -> Unit,
+    onUpload: (String) -> Unit,
     onDelete: (String) -> Unit
 ) {
     val context = LocalContext.current
@@ -607,6 +613,12 @@ private fun RecordingFileRow(
             horizontalAlignment = Alignment.End,
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
+            Button(
+                onClick = { onUpload(info.name) },
+                enabled = buttonsEnabled && !isBusy
+            ) {
+                Text("Upload")
+            }
             OutlinedButton(
                 onClick = { onExport(info.name, RecordExportTarget.Downloads) },
                 enabled = buttonsEnabled && !isBusy
@@ -767,6 +779,7 @@ private fun EmotiBitScreenPreview() {
             onStopRecording = {},
             onSaveAs = {},
             onExportRecording = { _, _ -> },
+            onUploadRecording = {},
             onDeleteRecording = {},
             onRefreshRecordings = {},
             onDismissRecordFileStatus = {},

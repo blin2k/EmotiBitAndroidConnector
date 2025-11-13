@@ -15,6 +15,7 @@ import android.os.Environment
 import android.os.PowerManager
 import android.provider.MediaStore
 import android.net.wifi.WifiManager
+import com.google.android.gms.tasks.Tasks
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.emotibitconnector.CsvRecorder
@@ -23,6 +24,9 @@ import com.example.emotibitconnector.SessionService
 import com.example.emotibitconnector.network.EmotiBitClient
 import com.example.emotibitconnector.network.EmotiBitProto
 import com.example.emotibitconnector.network.SessionConfig
+import com.google.firebase.storage.FirebaseStorage
+import com.google.firebase.storage.StorageMetadata
+import com.google.firebase.storage.UploadTask
 import java.io.File
 import java.net.Inet4Address
 import java.net.InetAddress
@@ -72,6 +76,7 @@ class EmotiBitViewModel(
 
     private val _uiState = MutableStateFlow(EmotiBitUiState())
     val uiState: StateFlow<EmotiBitUiState> = _uiState.asStateFlow()
+    private val storage = FirebaseStorage.getInstance()
 
     init {
         val savedUserId = loadSavedUserId()
@@ -395,6 +400,45 @@ class EmotiBitViewModel(
         }
     }
 
+    fun uploadRecording(fileName: String) {
+        val file = findRecordingFile(fileName)
+        if (file == null) {
+            setError("Recording not found: $fileName")
+            return
+        }
+        viewModelScope.launch {
+            beginRecordFileOperation(fileName)
+            val userId = _uiState.value.userIdText.takeIf { it.isNotBlank() }
+            val result = withContext(Dispatchers.IO) {
+                runCatching { performUpload(file, userId) }
+            }
+            endRecordFileOperation()
+            result.onSuccess { upload ->
+                val message = "Uploaded ${file.name} to Firebase Storage (${upload.remotePath})"
+                _uiState.update {
+                    it.copy(
+                        recordFileStatusMessage = message,
+                        recordFileErrorMessage = null
+                    )
+                }
+                appendLog(message)
+                upload.downloadUrl?.let { url ->
+                    appendLog("Firebase download URL: $url")
+                }
+            }.onFailure { throwable ->
+                val msg = throwable.message ?: throwable.toString()
+                _uiState.update {
+                    it.copy(
+                        recordFileStatusMessage = null,
+                        recordFileErrorMessage = msg
+                    )
+                }
+                Logx.e("Failed to upload recording", throwable)
+            }
+            refreshRecordings()
+        }
+    }
+
     fun clearRecordFileStatus() {
         _uiState.update { it.copy(recordFileStatusMessage = null, recordFileErrorMessage = null) }
     }
@@ -640,6 +684,36 @@ class EmotiBitViewModel(
         }
     }
 
+    private fun performUpload(file: File, userId: String?): UploadResult {
+        val sanitized = userId?.let(::sanitizeUserId).orEmpty()
+        val ownerSegment = sanitized.ifBlank { DEFAULT_UPLOAD_OWNER }
+        val remotePath = listOf(FIREBASE_STORAGE_ROOT, ownerSegment, file.name).joinToString("/")
+        val metadata = StorageMetadata.Builder()
+            .setContentType("text/csv")
+            .apply {
+                setCustomMetadata("source", "EmotiBitConnector")
+                setCustomMetadata("sizeBytes", file.length().toString())
+                setCustomMetadata("uploadedAt", Instant.now().toString())
+                if (sanitized.isNotBlank()) {
+                    setCustomMetadata("userId", sanitized)
+                }
+            }
+            .build()
+        val ref = storage.reference.child(remotePath)
+        val uri = Uri.fromFile(file)
+        val uploadTask: UploadTask = ref.putFile(uri, metadata)
+        Tasks.await<UploadTask.TaskSnapshot>(uploadTask)
+        val downloadUrl = runCatching {
+            Tasks.await<Uri>(ref.downloadUrl).toString()
+        }.getOrNull()
+        return UploadResult(remotePath = remotePath, downloadUrl = downloadUrl)
+    }
+
+    private data class UploadResult(
+        val remotePath: String,
+        val downloadUrl: String?
+    )
+
     private fun insertMediaEntry(
         resolver: ContentResolver,
         displayName: String,
@@ -794,6 +868,8 @@ class EmotiBitViewModel(
         private const val DEFAULT_STEM_PREFIX = "EmotiBit"
         private const val PREFS_NAME = "emotibit_connector_prefs"
         private const val KEY_USER_ID = "user_id"
+        private const val FIREBASE_STORAGE_ROOT = "recordings"
+        private const val DEFAULT_UPLOAD_OWNER = "anonymous"
     }
 }
 
