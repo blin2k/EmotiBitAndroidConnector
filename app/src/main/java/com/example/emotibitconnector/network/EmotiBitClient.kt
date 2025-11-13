@@ -17,6 +17,7 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketException
@@ -131,7 +132,7 @@ class EmotiBitClient(
                 bindProcessToNetwork(cm, network)
                 boundWifi = network
             } else {
-                Logx.w("Wi-Fi network request returned null")
+                Logx.w("Wi-Fi network request returned null; falling back to local-only interface if available")
             }
             network
         } catch (ex: Exception) {
@@ -153,17 +154,28 @@ class EmotiBitClient(
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val network = boundWifi?.takeIf { isWifiNetwork(cm, it) }
             ?: findExistingWifiNetwork(cm)
-            ?: return null
-        if (boundWifi != network) {
-            bindProcessToNetwork(cm, network)
+        if (network != null) {
+            if (boundWifi != network) {
+                bindProcessToNetwork(cm, network)
+            }
+            val linkProps = cm.getLinkProperties(network)
+            val linkAddress = linkProps?.linkAddresses?.firstOrNull { it.address is Inet4Address }
+            val ipv4 = linkAddress?.address as? Inet4Address
+            val prefix = linkAddress?.prefixLength
+            if (ipv4 != null && prefix != null) {
+                val broadcast = computeBroadcast(ipv4, prefix)
+                Logx.i("Wi-Fi net info ip=${ipv4.hostAddress} prefix=$prefix broadcast=${broadcast.hostAddress}")
+                return NetInfo(ipv4, prefix, broadcast)
+            }
         }
-        val linkProps = cm.getLinkProperties(network) ?: return null
-        val linkAddress = linkProps.linkAddresses.firstOrNull { it.address is Inet4Address } ?: return null
-        val ipv4 = linkAddress.address as? Inet4Address ?: return null
-        val prefix = linkAddress.prefixLength
-        val broadcast = computeBroadcast(ipv4, prefix)
-        Logx.i("Wi-Fi net info ip=${ipv4.hostAddress} prefix=$prefix broadcast=${broadcast.hostAddress}")
-        return NetInfo(ipv4, prefix, broadcast)
+
+        val hotspotInfo = computeLegacyNetInfo()
+        if (hotspotInfo != null) {
+            Logx.i("Legacy net info ip=${hotspotInfo.ipv4.hostAddress} prefix=${hotspotInfo.prefixLen} broadcast=${hotspotInfo.broadcast.hostAddress}")
+        } else {
+            Logx.w("Unable to resolve local IPv4 network info")
+        }
+        return hotspotInfo
     }
 
     suspend fun scanEmotiBits(
@@ -173,10 +185,7 @@ class EmotiBitClient(
         timeoutMs: Long = 1_500L,
         maxHosts: Int = 256
     ): List<DiscoveredDevice> = withContext(ioContext) {
-        val network = bindToWifiNetwork(context) ?: run {
-            Logx.w("scanEmotiBits: no Wi-Fi network bound")
-            return@withContext emptyList<DiscoveredDevice>()
-        }
+        val network = bindToWifiNetwork(context)
         val net = currentWifiNetInfo(context) ?: run {
             Logx.w("scanEmotiBits: unable to resolve Wi-Fi net info")
             return@withContext emptyList<DiscoveredDevice>()
@@ -189,7 +198,12 @@ class EmotiBitClient(
             soTimeout = timeoutMs.toInt()
             broadcast = true
         }
-        runCatching { network.bindSocket(socket) }
+        if (network != null) {
+            runCatching { network.bindSocket(socket) }
+                .onFailure { Logx.w("Scan: failed to bind socket to Wi-Fi network", it) }
+        } else {
+            Logx.i("Scan: using default interface (no ConnectivityManager Wi-Fi network)")
+        }
 
         fun sendLine(dst: InetAddress, line: String) {
             val bytes = (line + "\n").toByteArray(StandardCharsets.US_ASCII)
@@ -551,6 +565,24 @@ class EmotiBitClient(
         val ipInt = ipv4ToInt(ip)
         val broadcast = ipInt or mask.inv()
         return intToInet(broadcast)
+    }
+
+    private fun computeLegacyNetInfo(): NetInfo? {
+        val interfaces = NetworkInterface.getNetworkInterfaces() ?: return null
+        while (interfaces.hasMoreElements()) {
+            val ni = interfaces.nextElement()
+            if (!ni.isUp || ni.isLoopback || ni.isVirtual) continue
+            val ifaceAddresses = ni.interfaceAddresses ?: continue
+            for (iface in ifaceAddresses) {
+                val addr = iface.address
+                if (addr is Inet4Address && addr.isSiteLocalAddress && !addr.isLoopbackAddress) {
+                    val broadcast = iface.broadcast as? Inet4Address ?: continue
+                    val prefix = runCatching { iface.networkPrefixLength.toInt() }.getOrNull() ?: continue
+                    return NetInfo(addr, prefix, broadcast)
+                }
+            }
+        }
+        return null
     }
 
     private fun prefixToMask(prefix: Int): Int = when {

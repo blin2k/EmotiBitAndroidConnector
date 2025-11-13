@@ -156,7 +156,9 @@ class EmotiBitViewModel(
             val result = withContext(Dispatchers.IO) {
                 runCatching {
                     val network = client.bindToWifiNetwork()
-                    requireNotNull(network) { "Wi-Fi network unavailable" }
+                    if (network == null) {
+                        appendLog("No ConnectivityManager Wi-Fi network detected; continuing with local interface")
+                    }
                     client.startSession(config) { payload, length, address, port ->
                         handleIncomingPacket(payload, length, address, port)
                     }
