@@ -391,6 +391,7 @@ fun EmotiBitScreen(
                     Text("Save As…")
                 }
             }
+            RecordingStatus(state)
             SavedRecordingsSection(
                 recordings = state.recordings,
                 isBusy = state.isRecordFileOperationRunning,
@@ -420,7 +421,6 @@ fun EmotiBitScreen(
             state.recordFileErrorMessage?.let { error ->
                 ErrorBanner(message = error, onDismiss = onDismissRecordFileStatus)
             }
-            RecordingStatus(state)
             state.recordError?.let { error ->
                 Text(
                     text = error,
