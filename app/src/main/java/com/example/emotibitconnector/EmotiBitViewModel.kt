@@ -53,6 +53,7 @@ class EmotiBitViewModel(
 
     private val client = EmotiBitClient(application, viewModelScope)
     private val recorder = CsvRecorder(application, viewModelScope)
+    private val locationLogger = LocationLogger(application, viewModelScope)
     private val recordingWakeManager = RecordingWakeManager(application)
     private val sessionWakeManager = SessionWakeManager(application)
     private val wifiLockManager = WifiLockManager(application)
@@ -90,6 +91,7 @@ class EmotiBitViewModel(
         }
         refreshLocalNetworkInfo()
         observeRecorder()
+        observeLocationLogger()
         refreshRecordings()
         runCatching { connectivityManager.registerNetworkCallback(wifiRequest, wifiCallback) }
             .onFailure { Logx.e("Failed to register Wi-Fi callback", it) }
@@ -272,6 +274,15 @@ class EmotiBitViewModel(
                             showRecordingBusyDialog = false
                         )
                     }
+                    val gpsStartResult = runCatching { locationLogger.start(LocationLogger.Config(stem)) }
+                    gpsStartResult.onSuccess {
+                        val target = locationLogger.targetDisplay.value
+                        val detail = if (target.isNotBlank()) " -> $target" else ""
+                        appendLog("GPS logging started$detail")
+                    }.onFailure { throwable ->
+                        Logx.e("Failed to start GPS logging", throwable)
+                        appendLog("GPS logging unavailable: ${throwable.message ?: throwable}")
+                    }
                     refreshRecordings()
                     appendLog("Recording started")
                 }
@@ -292,6 +303,8 @@ class EmotiBitViewModel(
         _uiState.update { it.copy(isRecordingStopInProgress = true, showRecordingBusyDialog = false) }
         viewModelScope.launch(Dispatchers.IO) {
             try {
+                runCatching { locationLogger.stop() }
+                    .onFailure { Logx.e("Failed to stop GPS logging", it) }
                 recorder.stop()
                 refreshRecordings()
                 appendLog("Recording stopped")
@@ -808,8 +821,17 @@ class EmotiBitViewModel(
         }
     }
 
+    private fun observeLocationLogger() {
+        viewModelScope.launch {
+            locationLogger.lastError.collect { error ->
+                error?.let { appendLog("GPS logger error: $it") }
+            }
+        }
+    }
+
     override fun onCleared() {
         runBlocking {
+            locationLogger.stop()
             recorder.stop()
         }
         client.stopSession()

@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.text.format.Formatter
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -24,6 +25,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -36,6 +39,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -47,6 +53,8 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
 import com.example.emotibitconnector.EmotiBitUiState
 import com.example.emotibitconnector.EmotiBitViewModel
 import com.example.emotibitconnector.Logx
@@ -61,37 +69,48 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+private enum class EmotiBitPage { Home, SavedRecordings }
+
 @Composable
 fun EmotiBitConnectorApp() {
     val viewModel: EmotiBitViewModel = viewModel()
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    EmotiBitScreen(
-        state = state,
-        onDeviceIpChange = viewModel::updateDeviceIp,
-        onDpChange = viewModel::updateDp,
-        onCpChange = viewModel::updateCp,
-        onEcIntervalChange = viewModel::updateEcInterval,
-        onUserIdChange = viewModel::updateUserId,
-        onStartClick = viewModel::startSession,
-        onStopClick = viewModel::stopSession,
-        onScanClick = viewModel::scanDevices,
-        onUseDiscovered = viewModel::applyDiscovered,
-        onStartRecording = viewModel::startRecording,
-        onStopRecording = viewModel::stopRecording,
-        onSaveAs = viewModel::setRecordUri,
-        onExportRecording = viewModel::exportRecording,
-        onUploadRecording = viewModel::uploadRecording,
-        onDeleteRecording = viewModel::deleteRecording,
-        onRefreshRecordings = viewModel::refreshRecordingList,
-        onDismissRecordFileStatus = viewModel::clearRecordFileStatus,
-        onSendPn = viewModel::sendPn,
-        onSendPo = viewModel::sendPo,
-        onSendHe = viewModel::sendHe,
-        onDismissError = viewModel::clearError,
-        onToggleOptionalUi = viewModel::toggleOptionalUi,
-        onDismissRecordingBusyPrompt = viewModel::dismissRecordingBusyPrompt,
-        onDismissStopSessionBusyPrompt = viewModel::dismissStopSessionBusyPrompt
-    )
+    var currentPage by rememberSaveable { mutableStateOf(EmotiBitPage.Home) }
+
+    when (currentPage) {
+        EmotiBitPage.Home -> EmotiBitScreen(
+            state = state,
+            onDeviceIpChange = viewModel::updateDeviceIp,
+            onDpChange = viewModel::updateDp,
+            onCpChange = viewModel::updateCp,
+            onEcIntervalChange = viewModel::updateEcInterval,
+            onUserIdChange = viewModel::updateUserId,
+            onStartClick = viewModel::startSession,
+            onStopClick = viewModel::stopSession,
+            onScanClick = viewModel::scanDevices,
+            onUseDiscovered = viewModel::applyDiscovered,
+            onStartRecording = viewModel::startRecording,
+            onStopRecording = viewModel::stopRecording,
+            onSaveAs = viewModel::setRecordUri,
+            onSendPn = viewModel::sendPn,
+            onSendPo = viewModel::sendPo,
+            onSendHe = viewModel::sendHe,
+            onDismissError = viewModel::clearError,
+            onToggleOptionalUi = viewModel::toggleOptionalUi,
+            onDismissRecordingBusyPrompt = viewModel::dismissRecordingBusyPrompt,
+            onDismissStopSessionBusyPrompt = viewModel::dismissStopSessionBusyPrompt,
+            onOpenSavedRecordings = { currentPage = EmotiBitPage.SavedRecordings }
+        )
+        EmotiBitPage.SavedRecordings -> SavedRecordingsScreen(
+            state = state,
+            onBack = { currentPage = EmotiBitPage.Home },
+            onExport = viewModel::exportRecording,
+            onUpload = viewModel::uploadRecording,
+            onDelete = viewModel::deleteRecording,
+            onRefresh = viewModel::refreshRecordingList,
+            onDismissRecordFileStatus = viewModel::clearRecordFileStatus
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -110,18 +129,14 @@ fun EmotiBitScreen(
     onStartRecording: () -> Unit,
     onStopRecording: () -> Unit,
     onSaveAs: (Uri?) -> Unit,
-    onExportRecording: (String, RecordExportTarget) -> Unit,
-    onUploadRecording: (String) -> Unit,
-    onDeleteRecording: (String) -> Unit,
-    onRefreshRecordings: () -> Unit,
-    onDismissRecordFileStatus: () -> Unit,
     onSendPn: () -> Unit,
     onSendPo: () -> Unit,
     onSendHe: () -> Unit,
     onDismissError: () -> Unit,
     onToggleOptionalUi: () -> Unit,
     onDismissRecordingBusyPrompt: () -> Unit,
-    onDismissStopSessionBusyPrompt: () -> Unit
+    onDismissStopSessionBusyPrompt: () -> Unit,
+    onOpenSavedRecordings: () -> Unit
 ) {
     Scaffold(
         topBar = {
@@ -152,6 +167,22 @@ fun EmotiBitScreen(
         ) {
             onStartClick()
         }
+        val locationPermissionLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.RequestMultiplePermissions()
+        ) { permissions ->
+            val granted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+            if (granted) {
+                onStartRecording()
+            } else {
+                Toast.makeText(
+                    context,
+                    "Location permission denied. Recording without GPS track.",
+                    Toast.LENGTH_SHORT
+                ).show()
+                onStartRecording()
+            }
+        }
 
         val handleStartClick = {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -166,6 +197,26 @@ fun EmotiBitScreen(
                 }
             } else {
                 onStartClick()
+            }
+        }
+        val handleStartRecording = {
+            val fineGranted = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+            val coarseGranted = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+            if (fineGranted || coarseGranted) {
+                onStartRecording()
+            } else {
+                locationPermissionLauncher.launch(
+                    arrayOf(
+                        Manifest.permission.ACCESS_FINE_LOCATION,
+                        Manifest.permission.ACCESS_COARSE_LOCATION
+                    )
+                )
             }
         }
 
@@ -375,7 +426,7 @@ fun EmotiBitScreen(
                 state.isRecordingCsv -> !state.isRecordingStopInProgress
                 else -> true
             }
-            val recordingAction = if (state.isRecordingCsv) onStopRecording else onStartRecording
+            val recordingAction = if (state.isRecordingCsv) onStopRecording else handleStartRecording
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -392,34 +443,8 @@ fun EmotiBitScreen(
                 }
             }
             RecordingStatus(state)
-            SavedRecordingsSection(
-                recordings = state.recordings,
-                isBusy = state.isRecordFileOperationRunning,
-                inProgressFile = state.recordFileInProgress,
-                onExport = onExportRecording,
-                onUpload = onUploadRecording,
-                onDelete = onDeleteRecording,
-                onRefresh = onRefreshRecordings
-            )
-            state.recordFileStatusMessage?.let { status ->
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = status,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.tertiary,
-                        modifier = Modifier.weight(1f)
-                    )
-                    TextButton(onClick = onDismissRecordFileStatus) {
-                        Text("Dismiss")
-                    }
-                }
-            }
-            state.recordFileErrorMessage?.let { error ->
-                ErrorBanner(message = error, onDismiss = onDismissRecordFileStatus)
+            OutlinedButton(onClick = onOpenSavedRecordings, modifier = Modifier.fillMaxWidth()) {
+                Text("Saved recordings")
             }
             state.recordError?.let { error ->
                 Text(
@@ -489,6 +514,71 @@ fun EmotiBitScreen(
                         LogRow(entry)
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+@OptIn(ExperimentalMaterial3Api::class)
+private fun SavedRecordingsScreen(
+    state: EmotiBitUiState,
+    onBack: () -> Unit,
+    onExport: (String, RecordExportTarget) -> Unit,
+    onUpload: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    onRefresh: () -> Unit,
+    onDismissRecordFileStatus: () -> Unit
+) {
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Saved recordings") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                }
+            )
+        }
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            RecordingStatus(state)
+            SavedRecordingsSection(
+                recordings = state.recordings,
+                isBusy = state.isRecordFileOperationRunning,
+                inProgressFile = state.recordFileInProgress,
+                onExport = onExport,
+                onUpload = onUpload,
+                onDelete = onDelete,
+                onRefresh = onRefresh
+            )
+            state.recordFileStatusMessage?.let { status ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = status,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.tertiary,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = onDismissRecordFileStatus) {
+                        Text("Dismiss")
+                    }
+                }
+            }
+            state.recordFileErrorMessage?.let { error ->
+                ErrorBanner(message = error, onDismiss = onDismissRecordFileStatus)
             }
         }
     }
@@ -778,18 +868,14 @@ private fun EmotiBitScreenPreview() {
             onStartRecording = {},
             onStopRecording = {},
             onSaveAs = {},
-            onExportRecording = { _, _ -> },
-            onUploadRecording = {},
-            onDeleteRecording = {},
-            onRefreshRecordings = {},
-            onDismissRecordFileStatus = {},
             onSendPn = {},
             onSendPo = {},
             onSendHe = {},
             onDismissError = {},
             onToggleOptionalUi = {},
             onDismissRecordingBusyPrompt = {},
-            onDismissStopSessionBusyPrompt = {}
+            onDismissStopSessionBusyPrompt = {},
+            onOpenSavedRecordings = {}
         )
     }
 }

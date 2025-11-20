@@ -54,6 +54,7 @@ class MainActivity : ComponentActivity() {
             Manifest.permission.ACCESS_WIFI_STATE,
             Manifest.permission.CHANGE_WIFI_MULTICAST_STATE,
             Manifest.permission.WAKE_LOCK,
+            Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.POST_NOTIFICATIONS
         )
         @Volatile
