@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.text.format.Formatter
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -19,10 +20,13 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -35,8 +39,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -46,6 +54,8 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
 import com.example.emotibitconnector.EmotiBitUiState
 import com.example.emotibitconnector.EmotiBitViewModel
 import com.example.emotibitconnector.Logx
@@ -55,38 +65,55 @@ import com.example.emotibitconnector.UiDiscovered
 import com.example.emotibitconnector.UiLogEntry
 import com.example.emotibitconnector.network.EmotiBitProto
 import com.example.emotibitconnector.ui.theme.EmotiBitConnectorTheme
+import com.example.emotibitconnector.ui.theme.StartGreen
+import com.example.emotibitconnector.ui.theme.StopRed
 import androidx.core.content.ContextCompat
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+private enum class EmotiBitPage { Home, SavedRecordings }
+
 @Composable
 fun EmotiBitConnectorApp() {
     val viewModel: EmotiBitViewModel = viewModel()
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    EmotiBitScreen(
-        state = state,
-        onDeviceIpChange = viewModel::updateDeviceIp,
-        onDpChange = viewModel::updateDp,
-        onCpChange = viewModel::updateCp,
-        onEcIntervalChange = viewModel::updateEcInterval,
-        onRecordFileStemChange = viewModel::updateRecordFileStem,
-        onStartClick = viewModel::startSession,
-        onStopClick = viewModel::stopSession,
-        onScanClick = viewModel::scanDevices,
-        onUseDiscovered = viewModel::applyDiscovered,
-        onStartRecording = viewModel::startRecording,
-        onStopRecording = viewModel::stopRecording,
-        onSaveAs = viewModel::setRecordUri,
-        onExportRecording = viewModel::exportRecording,
-        onDeleteRecording = viewModel::deleteRecording,
-        onRefreshRecordings = viewModel::refreshRecordingList,
-        onDismissRecordFileStatus = viewModel::clearRecordFileStatus,
-        onSendPn = viewModel::sendPn,
-        onSendPo = viewModel::sendPo,
-        onSendHe = viewModel::sendHe,
-        onDismissError = viewModel::clearError
-    )
+    var currentPage by rememberSaveable { mutableStateOf(EmotiBitPage.Home) }
+
+    when (currentPage) {
+        EmotiBitPage.Home -> EmotiBitScreen(
+            state = state,
+            onDeviceIpChange = viewModel::updateDeviceIp,
+            onDpChange = viewModel::updateDp,
+            onCpChange = viewModel::updateCp,
+            onEcIntervalChange = viewModel::updateEcInterval,
+            onUserIdChange = viewModel::updateUserId,
+            onStartClick = viewModel::startSession,
+            onStopClick = viewModel::stopSession,
+            onScanClick = viewModel::scanDevices,
+            onUseDiscovered = viewModel::applyDiscovered,
+            onStartRecording = viewModel::startRecording,
+            onStopRecording = viewModel::stopRecording,
+            onSaveAs = viewModel::setRecordUri,
+            onSendPn = viewModel::sendPn,
+            onSendPo = viewModel::sendPo,
+            onSendHe = viewModel::sendHe,
+            onDismissError = viewModel::clearError,
+            onToggleOptionalUi = viewModel::toggleOptionalUi,
+            onDismissRecordingBusyPrompt = viewModel::dismissRecordingBusyPrompt,
+            onDismissStopSessionBusyPrompt = viewModel::dismissStopSessionBusyPrompt,
+            onOpenSavedRecordings = { currentPage = EmotiBitPage.SavedRecordings }
+        )
+        EmotiBitPage.SavedRecordings -> SavedRecordingsScreen(
+            state = state,
+            onBack = { currentPage = EmotiBitPage.Home },
+            onExport = viewModel::exportRecording,
+            onUpload = viewModel::uploadRecording,
+            onDelete = viewModel::deleteRecording,
+            onRefresh = viewModel::refreshRecordingList,
+            onDismissRecordFileStatus = viewModel::clearRecordFileStatus
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -97,7 +124,7 @@ fun EmotiBitScreen(
     onDpChange: (String) -> Unit,
     onCpChange: (String) -> Unit,
     onEcIntervalChange: (String) -> Unit,
-    onRecordFileStemChange: (String) -> Unit,
+    onUserIdChange: (String) -> Unit,
     onStartClick: () -> Unit,
     onStopClick: () -> Unit,
     onScanClick: () -> Unit,
@@ -105,14 +132,14 @@ fun EmotiBitScreen(
     onStartRecording: () -> Unit,
     onStopRecording: () -> Unit,
     onSaveAs: (Uri?) -> Unit,
-    onExportRecording: (String, RecordExportTarget) -> Unit,
-    onDeleteRecording: (String) -> Unit,
-    onRefreshRecordings: () -> Unit,
-    onDismissRecordFileStatus: () -> Unit,
     onSendPn: () -> Unit,
     onSendPo: () -> Unit,
     onSendHe: () -> Unit,
-    onDismissError: () -> Unit
+    onDismissError: () -> Unit,
+    onToggleOptionalUi: () -> Unit,
+    onDismissRecordingBusyPrompt: () -> Unit,
+    onDismissStopSessionBusyPrompt: () -> Unit,
+    onOpenSavedRecordings: () -> Unit
 ) {
     Scaffold(
         topBar = {
@@ -143,6 +170,22 @@ fun EmotiBitScreen(
         ) {
             onStartClick()
         }
+        val locationPermissionLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.RequestMultiplePermissions()
+        ) { permissions ->
+            val granted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+            if (granted) {
+                onStartRecording()
+            } else {
+                Toast.makeText(
+                    context,
+                    "Location permission denied. Recording without GPS track.",
+                    Toast.LENGTH_SHORT
+                ).show()
+                onStartRecording()
+            }
+        }
 
         val handleStartClick = {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -159,6 +202,39 @@ fun EmotiBitScreen(
                 onStartClick()
             }
         }
+        val handleStartRecording = {
+            val fineGranted = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+            val coarseGranted = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+            if (fineGranted || coarseGranted) {
+                onStartRecording()
+            } else {
+                locationPermissionLauncher.launch(
+                    arrayOf(
+                        Manifest.permission.ACCESS_FINE_LOCATION,
+                        Manifest.permission.ACCESS_COARSE_LOCATION
+                    )
+                )
+            }
+        }
+
+        val startButtonColors = ButtonDefaults.buttonColors(
+            containerColor = StartGreen,
+            contentColor = Color.White,
+            disabledContainerColor = StartGreen.copy(alpha = 0.5f),
+            disabledContentColor = Color.White.copy(alpha = 0.8f)
+        )
+        val stopButtonColors = ButtonDefaults.buttonColors(
+            containerColor = StopRed,
+            contentColor = Color.White,
+            disabledContainerColor = StopRed.copy(alpha = 0.5f),
+            disabledContentColor = Color.White.copy(alpha = 0.8f)
+        )
 
         Column(
             modifier = Modifier
@@ -168,10 +244,20 @@ fun EmotiBitScreen(
                 .verticalScroll(scrollState),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text(
-                text = "Set the EmotiBit device IP (from AP client list) then press Start to open UDP/TCP session.",
-                style = MaterialTheme.typography.bodyMedium
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(onClick = onToggleOptionalUi) {
+                    Text(if (state.showOptionalUi) "Hide optional UI" else "Show optional UI")
+                }
+            }
+            if (state.showOptionalUi) {
+                Text(
+                    text = "Set the EmotiBit device IP (from AP client list) then press Start to open UDP/TCP session.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -233,126 +319,265 @@ fun EmotiBitScreen(
                     }
                 }
             }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                OutlinedTextField(
-                    value = state.dpText,
-                    onValueChange = onDpChange,
-                    modifier = Modifier.weight(1f),
-                    singleLine = true,
-                    label = { Text("UDP DP") },
-                    placeholder = { Text(EmotiBitProto.DEFAULT_DATA_PORT.toString()) }
-                )
-                OutlinedTextField(
-                    value = state.cpText,
-                    onValueChange = onCpChange,
-                    modifier = Modifier.weight(1f),
-                    singleLine = true,
-                    label = { Text("TCP CP") },
-                    placeholder = { Text((EmotiBitProto.DEFAULT_DATA_PORT + 1).toString()) }
-                )
-            }
-            OutlinedTextField(
-                value = state.ecIntervalText,
-                onValueChange = onEcIntervalChange,
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                label = { Text("EC interval (ms)") },
-                placeholder = { Text("1000") }
-            )
-            ReadOnlyInfoField("Local Wi-Fi IPv4", state.localWifiIp ?: "<unknown>")
-            ReadOnlyInfoField("Broadcast IPv4", state.broadcastIp ?: "<unknown>")
-            ReadOnlyInfoField("Subnet Prefix", state.localWifiPrefix?.let { "/$it" } ?: "<unknown>")
-            Divider()
-            Text(
-                text = "Connection",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Button(
-                    onClick = handleStartClick,
-                    enabled = state.deviceIpText.isNotBlank()
+            if (state.showOptionalUi) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Text("Start listening & connect")
+                    OutlinedTextField(
+                        value = state.dpText,
+                        onValueChange = onDpChange,
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        label = { Text("UDP DP") },
+                        placeholder = { Text(EmotiBitProto.DEFAULT_DATA_PORT.toString()) }
+                    )
+                    OutlinedTextField(
+                        value = state.cpText,
+                        onValueChange = onCpChange,
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        label = { Text("TCP CP") },
+                        placeholder = { Text((EmotiBitProto.DEFAULT_DATA_PORT + 1).toString()) }
+                    )
                 }
-                OutlinedButton(
-                    onClick = onStopClick,
-                    enabled = state.isStreaming
-                ) {
-                    Text("Stop")
-                }
+                OutlinedTextField(
+                    value = state.ecIntervalText,
+                    onValueChange = onEcIntervalChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("EC interval (ms)") },
+                    placeholder = { Text("1000") }
+                )
+                ReadOnlyInfoField("Local Wi-Fi IPv4", state.localWifiIp ?: "<unknown>")
+                ReadOnlyInfoField("Broadcast IPv4", state.broadcastIp ?: "<unknown>")
+                ReadOnlyInfoField("Subnet Prefix", state.localWifiPrefix?.let { "/$it" } ?: "<unknown>")
+                Divider()
+                Text(
+                    text = "Connection",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
             }
-            Row(
+            val startStopLabel = when {
+                state.isStreaming && state.isStopSessionInProgress -> "Stopping…"
+                state.isStreaming -> "Stop listening"
+                else -> "Start listening & connect"
+            }
+            val startStopEnabled = when {
+                state.isStreaming -> !state.isStopSessionInProgress
+                else -> state.deviceIpText.isNotBlank()
+            }
+            val startStopAction = if (state.isStreaming) onStopClick else handleStartClick
+            Button(
+                onClick = startStopAction,
+                enabled = startStopEnabled,
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                colors = if (state.isStreaming) stopButtonColors else startButtonColors
             ) {
-                OutlinedButton(onClick = onSendPn, enabled = state.isStreaming) {
-                    Text("Send PN")
-                }
-                OutlinedButton(onClick = onSendPo, enabled = state.isStreaming) {
-                    Text("Send PO")
-                }
-                OutlinedButton(onClick = onSendHe, enabled = state.deviceIpText.isNotBlank()) {
-                    Text("Send HE")
-                }
+                Text(startStopLabel)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                TextButton(onClick = {
-                    val intent = android.content.Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                        data = Uri.parse("package:${context.packageName}")
+            if (state.showOptionalUi) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    OutlinedButton(onClick = onSendPn, enabled = state.isStreaming) {
+                        Text("Send PN")
                     }
-                    runCatching { context.startActivity(intent) }
-                }) {
-                    Text("Battery optimization tips")
+                    OutlinedButton(onClick = onSendPo, enabled = state.isStreaming) {
+                        Text("Send PO")
+                    }
+                    OutlinedButton(onClick = onSendHe, enabled = state.deviceIpText.isNotBlank()) {
+                        Text("Send HE")
+                    }
                 }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    TextButton(onClick = {
+                        val intent = android.content.Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                            data = Uri.parse("package:${context.packageName}")
+                        }
+                        runCatching { context.startActivity(intent) }
+                    }) {
+                        Text("Battery optimization tips")
+                    }
+                }
+                Divider()
+            } else {
+                Divider()
             }
-            Divider()
             Text(
                 text = "Recording",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold
             )
             OutlinedTextField(
-                value = state.recordFileStem,
-                onValueChange = onRecordFileStemChange,
+                value = state.userIdText,
+                onValueChange = onUserIdChange,
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
-                label = { Text("Filename (stem)") },
-                placeholder = { Text("EmotiBit-<timestamp>") }
+                label = { Text("User ID") },
+                placeholder = { Text("e.g. PT01") }
             )
+            OutlinedTextField(
+                value = state.recordResolvedName,
+                onValueChange = {},
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Resolved filename") },
+                readOnly = true,
+                enabled = false,
+                colors = TextFieldDefaults.colors(
+                    disabledTextColor = MaterialTheme.colorScheme.onSurface,
+                    disabledLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    disabledLeadingIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    disabledTrailingIconColor = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            )
+            val recordingLabel = when {
+                state.isRecordingCsv && state.isRecordingStopInProgress -> "Stopping recording…"
+                state.isRecordingCsv -> "Stop Recording"
+                else -> "Start Recording"
+            }
+            val recordingEnabled = when {
+                state.isRecordingCsv -> !state.isRecordingStopInProgress
+                else -> true
+            }
+            val recordingAction = if (state.isRecordingCsv) onStopRecording else handleStartRecording
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Button(
-                    onClick = onStartRecording,
-                    enabled = !state.isRecordingCsv
+                    onClick = recordingAction,
+                    enabled = recordingEnabled,
+                    modifier = Modifier.weight(1f),
+                    colors = if (state.isRecordingCsv) stopButtonColors else startButtonColors
                 ) {
-                    Text("Start Recording")
-                }
-                OutlinedButton(
-                    onClick = onStopRecording,
-                    enabled = state.isRecordingCsv
-                ) {
-                    Text("Stop Recording")
+                    Text(recordingLabel)
                 }
                 TextButton(onClick = { saveAsLauncher.launch(suggestedName) }) {
                     Text("Save As…")
                 }
             }
+            RecordingStatus(state)
+            OutlinedButton(onClick = onOpenSavedRecordings, modifier = Modifier.fillMaxWidth()) {
+                Text("Saved recordings")
+            }
+            state.recordError?.let { error ->
+                Text(
+                    text = error,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            if (state.showRecordingBusyDialog) {
+                AlertDialog(
+                    onDismissRequest = onDismissRecordingBusyPrompt,
+                    confirmButton = {
+                        TextButton(onClick = onDismissRecordingBusyPrompt) {
+                            Text("OK")
+                        }
+                    },
+                    title = { Text("Finishing recording") },
+                    text = { Text("Stop Recording is still processing. Please wait…") }
+                )
+            }
+            if (state.showStopSessionBusyDialog) {
+                AlertDialog(
+                    onDismissRequest = onDismissStopSessionBusyPrompt,
+                    confirmButton = {
+                        TextButton(onClick = onDismissStopSessionBusyPrompt) {
+                            Text("OK")
+                        }
+                    },
+                    title = { Text("Stopping session") },
+                    text = { Text("Stop listening is already in progress. Please wait…") }
+                )
+            }
+            state.errorMessage?.let { message ->
+                ErrorBanner(message = message, onDismiss = onDismissError)
+            }
+            if (state.showOptionalUi) {
+                Divider()
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Session log",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    OutlinedButton(onClick = {
+                        clipboardManager.setText(AnnotatedString(diagnostics))
+                        Logx.i("Diagnostics copied to clipboard (logCount=${state.logEntries.size})")
+                    }) {
+                        Text("Copy diagnostics")
+                    }
+                }
+                val logListState = rememberLazyListState()
+                LaunchedEffect(state.logEntries.size) {
+                    if (state.logEntries.isNotEmpty()) {
+                        logListState.animateScrollToItem(state.logEntries.lastIndex)
+                    }
+                }
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 160.dp, max = 320.dp),
+                    state = logListState
+                ) {
+                    items(state.logEntries, key = { it.id }) { entry ->
+                        LogRow(entry)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+@OptIn(ExperimentalMaterial3Api::class)
+private fun SavedRecordingsScreen(
+    state: EmotiBitUiState,
+    onBack: () -> Unit,
+    onExport: (String, RecordExportTarget) -> Unit,
+    onUpload: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    onRefresh: () -> Unit,
+    onDismissRecordFileStatus: () -> Unit
+) {
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Saved recordings") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                }
+            )
+        }
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            RecordingStatus(state)
             SavedRecordingsSection(
                 recordings = state.recordings,
                 isBusy = state.isRecordFileOperationRunning,
                 inProgressFile = state.recordFileInProgress,
-                onExport = onExportRecording,
-                onDelete = onDeleteRecording,
-                onRefresh = onRefreshRecordings
+                showOptionalUi = state.showOptionalUi,
+                onExport = onExport,
+                onUpload = onUpload,
+                onDelete = onDelete,
+                onRefresh = onRefresh
             )
             state.recordFileStatusMessage?.let { status ->
                 Row(
@@ -373,50 +598,6 @@ fun EmotiBitScreen(
             }
             state.recordFileErrorMessage?.let { error ->
                 ErrorBanner(message = error, onDismiss = onDismissRecordFileStatus)
-            }
-            RecordingStatus(state)
-            state.recordError?.let { error ->
-                Text(
-                    text = error,
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-            state.errorMessage?.let { message ->
-                ErrorBanner(message = message, onDismiss = onDismissError)
-            }
-            Divider()
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Session log",
-                    style = MaterialTheme.typography.titleMedium
-                )
-                OutlinedButton(onClick = {
-                    clipboardManager.setText(AnnotatedString(diagnostics))
-                    Logx.i("Diagnostics copied to clipboard (logCount=${state.logEntries.size})")
-                }) {
-                    Text("Copy diagnostics")
-                }
-            }
-            val logListState = rememberLazyListState()
-            LaunchedEffect(state.logEntries.size) {
-                if (state.logEntries.isNotEmpty()) {
-                    logListState.animateScrollToItem(state.logEntries.lastIndex)
-                }
-            }
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 160.dp, max = 320.dp),
-                state = logListState
-            ) {
-                items(state.logEntries, key = { it.id }) { entry ->
-                    LogRow(entry)
-                }
             }
         }
     }
@@ -450,7 +631,9 @@ private fun SavedRecordingsSection(
     recordings: List<RecordFileInfo>,
     isBusy: Boolean,
     inProgressFile: String?,
+    showOptionalUi: Boolean,
     onExport: (String, RecordExportTarget) -> Unit,
+    onUpload: (String) -> Unit,
     onDelete: (String) -> Unit,
     onRefresh: () -> Unit
 ) {
@@ -486,7 +669,9 @@ private fun SavedRecordingsSection(
                         info = file,
                         isBusy = isBusy && inProgressFile == file.name,
                         buttonsEnabled = !isBusy,
+                        showOptionalUi = showOptionalUi,
                         onExport = onExport,
+                        onUpload = onUpload,
                         onDelete = onDelete
                     )
                     if (index != recordings.lastIndex) {
@@ -503,7 +688,9 @@ private fun RecordingFileRow(
     info: RecordFileInfo,
     isBusy: Boolean,
     buttonsEnabled: Boolean,
+    showOptionalUi: Boolean,
     onExport: (String, RecordExportTarget) -> Unit,
+    onUpload: (String) -> Unit,
     onDelete: (String) -> Unit
 ) {
     val context = LocalContext.current
@@ -538,17 +725,25 @@ private fun RecordingFileRow(
             horizontalAlignment = Alignment.End,
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            OutlinedButton(
-                onClick = { onExport(info.name, RecordExportTarget.Downloads) },
+            Button(
+                onClick = { onUpload(info.name) },
                 enabled = buttonsEnabled && !isBusy
             ) {
-                Text("Downloads")
+                Text("Upload")
             }
-            OutlinedButton(
-                onClick = { onExport(info.name, RecordExportTarget.Documents) },
-                enabled = buttonsEnabled && !isBusy
-            ) {
-                Text("Documents")
+            if (showOptionalUi) {
+                OutlinedButton(
+                    onClick = { onExport(info.name, RecordExportTarget.Downloads) },
+                    enabled = buttonsEnabled && !isBusy
+                ) {
+                    Text("Downloads")
+                }
+                OutlinedButton(
+                    onClick = { onExport(info.name, RecordExportTarget.Documents) },
+                    enabled = buttonsEnabled && !isBusy
+                ) {
+                    Text("Documents")
+                }
             }
             TextButton(
                 onClick = { onDelete(info.name) },
@@ -649,6 +844,7 @@ private fun EmotiBitScreenPreview() {
                 dpText = "3132",
                 cpText = "3133",
                 ecIntervalText = "1000",
+                userIdText = "PT01",
                 localWifiIp = "192.168.50.5",
                 broadcastIp = "192.168.50.255",
                 localWifiPrefix = 24,
@@ -662,8 +858,8 @@ private fun EmotiBitScreenPreview() {
                     UiLogEntry(2, "UDP packet received", System.currentTimeMillis())
                 ),
                 discoveredDevices = listOf(UiDiscovered("192.168.50.36", "MD-V5-0000241")),
-                recordFileStem = "EmotiBit-20250101-000000",
-                recordResolvedName = "EmotiBit-20250101-000000.csv",
+                recordFileStem = "PT01-20250101",
+                recordResolvedName = "PT01-20250101.csv",
                 isRecordingCsv = true,
                 recordRows = 1200,
                 recordTarget = ".../files/EmotiBit/EmotiBit-20250101-000000.csv",
@@ -688,7 +884,7 @@ private fun EmotiBitScreenPreview() {
             onDpChange = {},
             onCpChange = {},
             onEcIntervalChange = {},
-            onRecordFileStemChange = {},
+            onUserIdChange = {},
             onStartClick = {},
             onStopClick = {},
             onScanClick = {},
@@ -696,14 +892,14 @@ private fun EmotiBitScreenPreview() {
             onStartRecording = {},
             onStopRecording = {},
             onSaveAs = {},
-            onExportRecording = { _, _ -> },
-            onDeleteRecording = {},
-            onRefreshRecordings = {},
-            onDismissRecordFileStatus = {},
             onSendPn = {},
             onSendPo = {},
             onSendHe = {},
-            onDismissError = {}
+            onDismissError = {},
+            onToggleOptionalUi = {},
+            onDismissRecordingBusyPrompt = {},
+            onDismissStopSessionBusyPrompt = {},
+            onOpenSavedRecordings = {}
         )
     }
 }

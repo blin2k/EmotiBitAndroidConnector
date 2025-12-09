@@ -16,6 +16,7 @@ visualisation and CSV logging.
 - Provides manual start/stop controls for streaming, PN/PO helpers, and HE debug
   commands.
 - Records incoming payloads to CSV with buffered writes and app-scoped storage.
+- Uploads saved CSV recordings to Firebase Storage for cloud backup/sharing.
 - Presents diagnostics in Jetpack Compose with live logs, packet counters, and network
   information (local IPv4, prefix, broadcast IP).
 
@@ -34,7 +35,9 @@ Additional assets live under `app/src/main/res`. Version catalogs are defined in
 `gradle/libs.versions.toml`.
 
 ## Build & Run
-Ensure Android Studio Koala (or newer) with JDK 17. Useful Gradle tasks:
+Ensure Android Studio Koala (or newer) with JDK 17. Drop your Firebase project's
+`google-services.json` into `app/` so the Google Services plugin can wire up Firebase
+Storage. Useful Gradle tasks:
 - `./gradlew assembleDebug` — Build a debuggable APK.
 - `./gradlew installDebug` — Install the debug build on a connected device/emulator.
 - `./gradlew testDebugUnitTest` — Run JVM unit tests.
@@ -53,8 +56,12 @@ Documents directory.
 3. Press **Start listening & connect** to begin the session. The app sends EC heartbeats
    ~1 Hz, accepts the TCP back-channel, and receives UDP payloads on the selected port.
 4. Use **Start Recording** to capture incoming packets to CSV. Files are appended in
-   `Documents/EmotiBit/EmotiBit-<date>.csv`.
-5. Review live logs and diagnostics; the **Copy diagnostics** button copies a concise
+   app-private storage and listed in the Saved recordings section.
+5. Use the **Upload** button beside a saved recording to push it to Firebase Storage.
+   Files are stored under `gs://<your-bucket>/recordings/<user-or-anonymous>/`. Ensure
+   your Storage rules allow the intended access (development often uses liberal rules;
+   production should require auth).
+6. Review live logs and diagnostics; the **Copy diagnostics** button copies a concise
    snapshot for support.
 
 ## Troubleshooting
@@ -65,6 +72,10 @@ Documents directory.
   active sockets on network change to avoid stale bindings.
 - Use the logs (tag `EmotiBit`) for insights into network binding, discovery, control
   packets, and UDP reception.
+- For Firebase uploads, double-check that `google-services.json` targets the correct
+  project and that Storage rules permit your use case. The common
+  `StorageException: Object does not exist at location` usually indicates a mismatch in
+  bucket name or insufficient write/read permissions.
 
 ## Contributing
 The repository has minimal history. Follow Kotlin style conventions, prefer immutable
