@@ -44,6 +44,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -64,6 +65,8 @@ import com.example.emotibitconnector.UiDiscovered
 import com.example.emotibitconnector.UiLogEntry
 import com.example.emotibitconnector.network.EmotiBitProto
 import com.example.emotibitconnector.ui.theme.EmotiBitConnectorTheme
+import com.example.emotibitconnector.ui.theme.StartGreen
+import com.example.emotibitconnector.ui.theme.StopRed
 import androidx.core.content.ContextCompat
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -220,6 +223,19 @@ fun EmotiBitScreen(
             }
         }
 
+        val startButtonColors = ButtonDefaults.buttonColors(
+            containerColor = StartGreen,
+            contentColor = Color.White,
+            disabledContainerColor = StartGreen.copy(alpha = 0.5f),
+            disabledContentColor = Color.White.copy(alpha = 0.8f)
+        )
+        val stopButtonColors = ButtonDefaults.buttonColors(
+            containerColor = StopRed,
+            contentColor = Color.White,
+            disabledContainerColor = StopRed.copy(alpha = 0.5f),
+            disabledContentColor = Color.White.copy(alpha = 0.8f)
+        )
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -356,7 +372,8 @@ fun EmotiBitScreen(
             Button(
                 onClick = startStopAction,
                 enabled = startStopEnabled,
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth(),
+                colors = if (state.isStreaming) stopButtonColors else startButtonColors
             ) {
                 Text(startStopLabel)
             }
@@ -434,7 +451,8 @@ fun EmotiBitScreen(
                 Button(
                     onClick = recordingAction,
                     enabled = recordingEnabled,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f),
+                    colors = if (state.isRecordingCsv) stopButtonColors else startButtonColors
                 ) {
                     Text(recordingLabel)
                 }
