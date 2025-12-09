@@ -573,6 +573,7 @@ private fun SavedRecordingsScreen(
                 recordings = state.recordings,
                 isBusy = state.isRecordFileOperationRunning,
                 inProgressFile = state.recordFileInProgress,
+                showOptionalUi = state.showOptionalUi,
                 onExport = onExport,
                 onUpload = onUpload,
                 onDelete = onDelete,
@@ -630,6 +631,7 @@ private fun SavedRecordingsSection(
     recordings: List<RecordFileInfo>,
     isBusy: Boolean,
     inProgressFile: String?,
+    showOptionalUi: Boolean,
     onExport: (String, RecordExportTarget) -> Unit,
     onUpload: (String) -> Unit,
     onDelete: (String) -> Unit,
@@ -667,6 +669,7 @@ private fun SavedRecordingsSection(
                         info = file,
                         isBusy = isBusy && inProgressFile == file.name,
                         buttonsEnabled = !isBusy,
+                        showOptionalUi = showOptionalUi,
                         onExport = onExport,
                         onUpload = onUpload,
                         onDelete = onDelete
@@ -685,6 +688,7 @@ private fun RecordingFileRow(
     info: RecordFileInfo,
     isBusy: Boolean,
     buttonsEnabled: Boolean,
+    showOptionalUi: Boolean,
     onExport: (String, RecordExportTarget) -> Unit,
     onUpload: (String) -> Unit,
     onDelete: (String) -> Unit
@@ -727,17 +731,19 @@ private fun RecordingFileRow(
             ) {
                 Text("Upload")
             }
-            OutlinedButton(
-                onClick = { onExport(info.name, RecordExportTarget.Downloads) },
-                enabled = buttonsEnabled && !isBusy
-            ) {
-                Text("Downloads")
-            }
-            OutlinedButton(
-                onClick = { onExport(info.name, RecordExportTarget.Documents) },
-                enabled = buttonsEnabled && !isBusy
-            ) {
-                Text("Documents")
+            if (showOptionalUi) {
+                OutlinedButton(
+                    onClick = { onExport(info.name, RecordExportTarget.Downloads) },
+                    enabled = buttonsEnabled && !isBusy
+                ) {
+                    Text("Downloads")
+                }
+                OutlinedButton(
+                    onClick = { onExport(info.name, RecordExportTarget.Documents) },
+                    enabled = buttonsEnabled && !isBusy
+                ) {
+                    Text("Documents")
+                }
             }
             TextButton(
                 onClick = { onDelete(info.name) },
