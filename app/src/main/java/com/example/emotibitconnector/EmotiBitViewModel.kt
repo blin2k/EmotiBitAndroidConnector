@@ -231,8 +231,8 @@ class EmotiBitViewModel(
         wifiLockManager.release()
         sessionWakeManager.release()
         SessionService.stop(appContext)
-        client.stopSession()
         viewModelScope.launch(Dispatchers.IO) {
+            client.stopSession()
             try {
                 recorder.stop()
             } catch (throwable: Throwable) {
