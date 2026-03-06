@@ -424,14 +424,16 @@ fun EmotiBitScreen(
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold
             )
-            OutlinedTextField(
-                value = state.userIdText,
-                onValueChange = onUserIdChange,
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                label = { Text("User ID") },
-                placeholder = { Text("e.g. PT01") }
-            )
+            if (state.showOptionalUi) {
+                OutlinedTextField(
+                    value = state.userIdText,
+                    onValueChange = onUserIdChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("User ID") },
+                    placeholder = { Text("e.g. PT01") }
+                )
+            }
             OutlinedTextField(
                 value = state.recordResolvedName,
                 onValueChange = {},

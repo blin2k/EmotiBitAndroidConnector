@@ -126,8 +126,17 @@ class EmotiBitViewModel(
         }
     }
 
+    private val optionalUiTapTimestamps = mutableListOf<Long>()
+
     fun toggleOptionalUi() {
-        _uiState.update { it.copy(showOptionalUi = !it.showOptionalUi) }
+        val now = System.currentTimeMillis()
+        optionalUiTapTimestamps.add(now)
+        // Keep only taps within the last 1 second
+        optionalUiTapTimestamps.removeAll { now - it > 1_000L }
+        if (optionalUiTapTimestamps.size >= 3) {
+            optionalUiTapTimestamps.clear()
+            _uiState.update { it.copy(showOptionalUi = !it.showOptionalUi) }
+        }
     }
 
     fun setRecordUri(uri: Uri?) {
