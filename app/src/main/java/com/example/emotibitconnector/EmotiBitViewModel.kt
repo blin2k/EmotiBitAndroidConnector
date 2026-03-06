@@ -214,7 +214,8 @@ class EmotiBitViewModel(
                     it.copy(
                         isStopSessionInProgress = false,
                         showStopSessionBusyDialog = false,
-                        isStreaming = false
+                        isStreaming = false,
+                        batteryPercent = null
                     )
                 }
             }
@@ -243,7 +244,8 @@ class EmotiBitViewModel(
                     it.copy(
                         isStreaming = false,
                         isStopSessionInProgress = false,
-                        showStopSessionBusyDialog = false
+                        showStopSessionBusyDialog = false,
+                        batteryPercent = null
                     )
                 }
                 appendLog("Session stopped")
@@ -641,12 +643,15 @@ class EmotiBitViewModel(
             recorder.append(timestamp, address.hostAddress, port, ascii)
         }
         val preview = ascii.take(MAX_PREVIEW_CHARS)
+        val batteryLine = ascii.lineSequence().firstOrNull { ",B%," in it }
+        val battery = batteryLine?.substringAfterLast(',')?.trim()?.toIntOrNull()
         _uiState.update { current ->
             current.copy(
                 packetsRx = current.packetsRx + 1,
                 lastSender = "${address.hostAddress}:$port",
                 lastPayloadPreview = preview,
-                isStreaming = true
+                isStreaming = true,
+                batteryPercent = battery ?: current.batteryPercent
             )
         }
     }
@@ -946,7 +951,8 @@ data class RecordFileInfo(
         val recordFileErrorMessage: String? = null,
         val recordFileInProgress: String? = null,
         val recordings: List<RecordFileInfo> = emptyList(),
-        val showRecordingBusyDialog: Boolean = false
+        val showRecordingBusyDialog: Boolean = false,
+        val batteryPercent: Int? = null
     )
 
 enum class RecordExportTarget(

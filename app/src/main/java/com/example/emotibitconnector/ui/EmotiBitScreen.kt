@@ -244,6 +244,19 @@ fun EmotiBitScreen(
                 .verticalScroll(scrollState),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            state.batteryPercent?.let { pct ->
+                val batteryColor = when {
+                    pct > 50 -> StartGreen
+                    pct > 20 -> Color(0xFFFF9800)
+                    else -> StopRed
+                }
+                Text(
+                    text = "Battery: $pct%",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = batteryColor
+                )
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End
@@ -819,7 +832,7 @@ private fun buildDiagnostics(state: EmotiBitUiState): String {
         "localWiFiIp=${state.localWifiIp ?: "<unknown>"} broadcast=${state.broadcastIp ?: "<unknown>"} prefix=${state.localWifiPrefix?.let { "/$it" } ?: "<unknown>"}"
     )
     builder.appendLine("discoveries=${state.discoveredDevices.size} scanning=${state.isScanning}")
-    builder.appendLine("packets=${state.packetsRx} lastSender=${state.lastSender ?: "<none>"}")
+    builder.appendLine("packets=${state.packetsRx} lastSender=${state.lastSender ?: "<none>"} battery=${state.batteryPercent?.let { "$it%" } ?: "unknown"}")
     builder.appendLine("lastPayload=${state.lastPayloadPreview ?: "<none>"}")
     builder.appendLine("recording=${state.isRecordingCsv} rows=${state.recordRows} target=${state.recordTarget ?: "<none>"}")
     builder.appendLine("logs (last ${state.logEntries.takeLast(20).size} lines)")
